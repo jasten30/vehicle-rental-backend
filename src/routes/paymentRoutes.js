@@ -1,4 +1,3 @@
-// backend/src/routes/paymentRoutes.js
 const express = require('express');
 const router = express.Router();
 const paymentController = require('../controllers/paymentController');
@@ -20,8 +19,8 @@ router.post('/cancel-booking', authMiddleware.verifyToken, authMiddleware.author
 router.get('/status/:bookingId', authMiddleware.verifyToken, authMiddleware.authorizeRole(['renter']), paymentController.getPaymentStatus);
 
 // Admin-only route to update payment status (e.g., mark as 'downpayment_received', 'full_payment_received', 'cancelled_no_downpayment', 'refunded' etc.)
-// In a real app, this would have a stricter admin authorization middleware
-router.put('/update-status', authMiddleware.verifyToken, authMiddleware.authorizeRole(['admin']), paymentController.updateBookingPaymentStatus);
+// FIXED: Allow 'owner' role to update status for their own vehicles' bookings
+router.put('/update-status', authMiddleware.verifyToken, authMiddleware.authorizeRole(['admin', 'owner']), paymentController.updateBookingPaymentStatus);
 
 console.log('[PaymentRoutes] Manual Payment routes loaded.');
 

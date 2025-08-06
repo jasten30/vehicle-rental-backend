@@ -1,4 +1,3 @@
-// backend/src/controllers/bookingController.js
 const { admin, db } = require('../utils/firebase');
 
 // Helper function for consistent logging
@@ -56,6 +55,7 @@ const getAllBookings = async (req, res) => {
                     rentalPricePerDay: vehicleData.rentalPricePerDay,
                     imageUrl: vehicleData.imageUrl,
                     location: vehicleData.location,
+                    ownerId: vehicleData.ownerId,
                 } : null,
             });
         }
@@ -251,6 +251,14 @@ const getBookingsByUser = async (req, res) => {
             const vehicleDoc = await db.collection('vehicles').doc(bookingData.vehicleId).get();
             const vehicleData = vehicleDoc.exists ? vehicleDoc.data() : null;
 
+            const renterDoc = await db.collection('users').doc(bookingData.renterId).get();
+            const renterData = renterDoc.exists ? renterDoc.data() : null;
+
+            log(`Processing booking ${doc.id}: VehicleId=${bookingData.vehicleId}, RenterId=${bookingData.renterId}`);
+            // FIXED: Using correct variable name `vehicleData`
+            log(`   Vehicle Data Found: ${!!vehicleData}`);
+            log(`   Renter Data Found: ${!!renterData}`);
+
             const startDate = convertToDate(bookingData.startDate);
             const endDate = convertToDate(bookingData.endDate);
             const createdAt = convertToDate(bookingData.createdAt);
@@ -261,6 +269,11 @@ const getBookingsByUser = async (req, res) => {
                 startDate: startDate ? startDate.toISOString() : null,
                 endDate: endDate ? endDate.toISOString() : null,
                 createdAt: createdAt ? createdAt.toISOString() : null,
+                renterDetails: renterData ? {
+                    id: renterDoc.id,
+                    username: renterData.username,
+                    email: renterData.email,
+                } : null,
                 vehicleDetails: vehicleData ? {
                     id: vehicleDoc.id,
                     make: vehicleData.make,
@@ -269,6 +282,7 @@ const getBookingsByUser = async (req, res) => {
                     rentalPricePerDay: vehicleData.rentalPricePerDay,
                     imageUrl: vehicleData.imageUrl,
                     location: vehicleData.location,
+                    ownerId: vehicleData.ownerId,
                 } : null,
             });
         }
@@ -407,6 +421,7 @@ const getBookingById = async (req, res) => {
                 rentalPricePerDay: vehicleData.rentalPricePerDay,
                 imageUrl: vehicleData.imageUrl,
                 location: vehicleData.location,
+                ownerId: vehicleData.ownerId,
             } : null,
         });
     } catch (error) {
@@ -525,8 +540,9 @@ const getOwnerBookings = async (req, res) => {
             const renterData = renterDoc.exists ? renterDoc.data() : null;
 
             log(`Processing booking ${doc.id}: VehicleId=${bookingData.vehicleId}, RenterId=${bookingData.renterId}`);
-            log(`  Vehicle Data Found: ${!!vehicleDocData}`);
-            log(`  Renter Data Found: ${!!renterData}`);
+            // FIXED: Using correct variable name `vehicleDocData`
+            log(`   Vehicle Data Found: ${!!vehicleDocData}`);
+            log(`   Renter Data Found: ${!!renterData}`);
 
             const startDate = convertToDate(bookingData.startDate);
             const endDate = convertToDate(bookingData.endDate);
@@ -550,12 +566,12 @@ const getOwnerBookings = async (req, res) => {
                     year: vehicleDocData.year,
                     imageUrl: vehicleDocData.imageUrl,
                     rentalPricePerDay: vehicleDocData.rentalPricePerDay,
+                    ownerId: vehicleDocData.ownerId,
                 } : null,
             });
         }
 
         log(`Successfully fetched and formatted ${bookings.length} bookings for owner's vehicles.`);
-        // Log the final formatted bookings (or a sample of them)
         log('Sample formatted booking: ' + JSON.stringify(bookings[0] || {}));
         res.status(200).json(bookings);
     } catch (error) {

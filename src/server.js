@@ -9,10 +9,11 @@ const authRoutes = require('./routes/authRoutes');
 const vehicleRoutes = require('./routes/vehicleRoutes');
 const bookingRoutes = require('./routes/bookingRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
-const userRoutes = require('./routes/userRoutes'); // NEW: Import userRoutes
+const userRoutes = require('./routes/userRoutes');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
+// Change the port from 5000 to 5001 to match the frontend
+const PORT = process.env.PORT || 5000; 
 
 // Middleware
 app.use(cors()); // Enable CORS for all origins
@@ -23,20 +24,20 @@ app.use('/api/auth', authRoutes);
 app.use('/api/vehicles', vehicleRoutes);
 app.use('/api/bookings', bookingRoutes);
 app.use('/api/payment', paymentRoutes);
-app.use('/api/users', userRoutes); // NEW: Use userRoutes
+app.use('/api/users', userRoutes);
 
 // Basic route for testing
 app.get('/', (req, res) => {
-  res.send('RentCycle Backend API is running!');
+  res.send('RentCycle Backend API is running!');
 });
 
 // Error handling middleware (optional, but good practice)
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).send('Something broke!');
+  console.error(err.stack);
+  res.status(500).send('Something broke!');
 });
 
 // Start the server
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });

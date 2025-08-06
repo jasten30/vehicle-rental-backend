@@ -13,10 +13,9 @@ const convertToDate = (value) => {
     }
     if (typeof value === 'string') {
         const date = new Date(value);
-        // Basic check to ensure it's a valid date after parsing
         return isNaN(date.getTime()) ? null : date;
     }
-    return null; // Or throw an error, depending on desired strictness
+    return null;
 };
 
 /**
@@ -97,8 +96,8 @@ const createBooking = async (req, res) => {
         const newBooking = {
             vehicleId,
             renterId,
-            startDate: admin.firestore.Timestamp.fromDate(start), // Ensure saving as Timestamp
-            endDate: admin.firestore.Timestamp.fromDate(end),    // Ensure saving as Timestamp
+            startDate: admin.firestore.Timestamp.fromDate(start),
+            endDate: admin.firestore.Timestamp.fromDate(end),
             totalCost: parseFloat(totalCost),
             downpaymentAmount: parseFloat(downpaymentAmount || 0),
             fullPaymentAmount: parseFloat(fullPaymentAmount || 0),
@@ -147,12 +146,12 @@ const apiCheckAvailability = async (req, res) => {
         const vehicleUnavailablePeriods = vehicleData.availability || [];
 
         for (const period of vehicleUnavailablePeriods) {
-            const periodStart = convertToDate(period.start); // Use helper
-            const periodEnd = convertToDate(period.end);     // Use helper
+            const periodStart = convertToDate(period.start);
+            const periodEnd = convertToDate(period.end);
 
             if (!periodStart || !periodEnd) {
                 console.warn(`[BookingController] Skipping invalid pre-defined availability period for vehicle ${vehicleId}:`, period);
-                continue; // Skip invalid periods
+                continue;
             }
 
             if (
@@ -172,12 +171,12 @@ const apiCheckAvailability = async (req, res) => {
 
         snapshot.forEach(doc => {
             const booking = doc.data();
-            const bookingStart = convertToDate(booking.startDate); // Use helper
-            const bookingEnd = convertToDate(booking.endDate);     // Use helper
+            const bookingStart = convertToDate(booking.startDate);
+            const bookingEnd = convertToDate(booking.endDate);
 
             if (!bookingStart || !bookingEnd) {
                 console.warn(`[BookingController] Skipping invalid booking date for booking ID ${doc.id}:`, booking);
-                return; // Skip this booking if dates are invalid
+                return;
             }
 
             if (
@@ -200,12 +199,12 @@ const apiCheckAvailability = async (req, res) => {
 
         // Calculate number of days (inclusive of start and end day)
         const diffTime = Math.abs(requestedEnd.getTime() - requestedStart.getTime());
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1; // +1 to make it inclusive
+        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
 
         const totalCost = parseFloat((rentalPricePerDay * diffDays).toFixed(2));
-        const downpaymentPercentage = 0.20; // 20% downpayment
+        const downpaymentPercentage = 0.20;
         const downpaymentAmount = parseFloat((totalCost * downpaymentPercentage).toFixed(2));
-        const fullPaymentAmount = parseFloat((totalCost - downpaymentAmount).toFixed(2)); // Remaining amount
+        const fullPaymentAmount = parseFloat((totalCost - downpaymentAmount).toFixed(2));
 
         log(`Vehicle ${vehicleId} is available. Calculated costs: Total=${totalCost}, Downpayment=${downpaymentAmount}, Full=${fullPaymentAmount}`);
         res.status(200).json({
@@ -228,7 +227,16 @@ const apiCheckAvailability = async (req, res) => {
 const getBookingsByUser = async (req, res) => {
     try {
         const { userId } = req.params;
-        log(`Fetching bookings for user ID: ${userId}`);
+        const requesterId = req.customUser.uid;
+        const requesterRole = req.customUser.role;
+
+        if (requesterId !== userId && requesterRole !== 'admin') {
+            log(`Unauthorized attempt to access user ${userId}'s bookings by user ${requesterId} (${requesterRole}).`);
+            return res.status(403).json({ message: 'Unauthorized: You can only view your own bookings.' });
+        }
+
+        log(`Fetching bookings for user ID: ${userId} by requester ${requesterId} (${requesterRole})`);
+
         const bookingsRef = db.collection('bookings').where('renterId', '==', userId);
         const snapshot = await bookingsRef.get();
 
@@ -243,9 +251,9 @@ const getBookingsByUser = async (req, res) => {
             const vehicleDoc = await db.collection('vehicles').doc(bookingData.vehicleId).get();
             const vehicleData = vehicleDoc.exists ? vehicleDoc.data() : null;
 
-            const startDate = convertToDate(bookingData.startDate); // Use helper
-            const endDate = convertToDate(bookingData.endDate);     // Use helper
-            const createdAt = convertToDate(bookingData.createdAt); // Use helper
+            const startDate = convertToDate(bookingData.startDate);
+            const endDate = convertToDate(bookingData.endDate);
+            const createdAt = convertToDate(bookingData.createdAt);
 
             bookings.push({
                 id: doc.id,
@@ -291,9 +299,9 @@ const getBookingsByVehicle = async (req, res) => {
         const bookings = [];
         snapshot.forEach(doc => {
             const bookingData = doc.data();
-            const startDate = convertToDate(bookingData.startDate); // Use helper
-            const endDate = convertToDate(bookingData.endDate);     // Use helper
-            const createdAt = convertToDate(bookingData.createdAt); // Use helper
+            const startDate = convertToDate(bookingData.startDate);
+            const endDate = convertToDate(bookingData.endDate);
+            const createdAt = convertToDate(bookingData.createdAt);
 
             bookings.push({
                 id: doc.id,
@@ -318,11 +326,10 @@ const getBookingsByVehicle = async (req, res) => {
 const updateBookingPaymentMethod = async (req, res) => {
     try {
         const { bookingId } = req.params;
-        // FIXED: Extract both paymentMethod and newStatus from req.body
-        const { paymentMethod, newStatus } = req.body; 
-        const renterId = req.customUser.uid; // Renter must be the one updating
+        const { paymentMethod, newStatus } = req.body;
+        const renterId = req.customUser.uid;
 
-        if (!paymentMethod || !newStatus) { // FIXED: Validate newStatus as well
+        if (!paymentMethod || !newStatus) {
             return res.status(400).json({ message: 'Missing paymentMethod or newStatus field.' });
         }
 
@@ -337,10 +344,9 @@ const updateBookingPaymentMethod = async (req, res) => {
             return res.status(403).json({ message: 'Unauthorized: You are not the renter for this booking.' });
         }
 
-        // FIXED: Update both paymentMethod and paymentStatus
         await bookingRef.update({
             paymentMethod: paymentMethod,
-            paymentStatus: newStatus, // Update the payment status
+            paymentStatus: newStatus,
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
 
@@ -366,10 +372,9 @@ const getBookingById = async (req, res) => {
         }
 
         const bookingData = bookingDoc.data();
-        const requesterId = req.customUser.uid; // Get current user's UID
-        const requesterRole = req.customUser.role; // Get current user's role
+        const requesterId = req.customUser.uid;
+        const requesterRole = req.customUser.role;
 
-        // Security check: Ensure the user requesting the booking details is the renter, owner of the vehicle, or an admin
         const vehicleDoc = await db.collection('vehicles').doc(bookingData.vehicleId).get();
         const vehicleData = vehicleDoc.exists ? vehicleDoc.data() : null;
         const ownerId = vehicleData ? vehicleData.ownerId : null;
@@ -379,8 +384,6 @@ const getBookingById = async (req, res) => {
             return res.status(403).json({ message: 'Unauthorized access to booking details.' });
         }
 
-
-        // Ensure all date fields are converted to ISO strings
         const startDate = convertToDate(bookingData.startDate);
         const endDate = convertToDate(bookingData.endDate);
         const createdAt = convertToDate(bookingData.createdAt);
@@ -393,9 +396,9 @@ const getBookingById = async (req, res) => {
             ...bookingData,
             startDate: startDate ? startDate.toISOString() : null,
             endDate: endDate ? endDate.toISOString() : null,
-            createdAt: createdAt ? createdAt.toISOString() : null, // Ensure this is ISO string
-            downpaymentDueDate: downpaymentDueDate ? downpaymentDueDate.toISOString() : null, // Ensure this is ISO string
-            cancellationGracePeriodEnd: cancellationGracePeriodEnd ? cancellationGracePeriodEnd.toISOString() : null, // Ensure this is ISO string
+            createdAt: createdAt ? createdAt.toISOString() : null,
+            downpaymentDueDate: downpaymentDueDate ? downpaymentDueDate.toISOString() : null,
+            cancellationGracePeriodEnd: cancellationGracePeriodEnd ? cancellationGracePeriodEnd.toISOString() : null,
             vehicleDetails: vehicleData ? {
                 id: vehicleDoc.id,
                 make: vehicleData.make,
@@ -477,8 +480,92 @@ const deleteBooking = async (req, res) => {
     }
 };
 
+/**
+ * Get all bookings for vehicles owned by the authenticated user.
+ */
+const getOwnerBookings = async (req, res) => {
+    try {
+        const ownerId = req.customUser.uid;
+        log(`Fetching bookings for vehicles owned by user ID: ${ownerId}`);
+
+        // Step 1: Find all vehicles belonging to the owner
+        const vehiclesRef = db.collection('vehicles').where('ownerId', '==', ownerId);
+        const vehiclesSnapshot = await vehiclesRef.get();
+
+        log(`Found ${vehiclesSnapshot.size} vehicles for owner ${ownerId}.`);
+        if (vehiclesSnapshot.empty) {
+            log('Owner has no registered vehicles.');
+            return res.status(200).json([]);
+        }
+
+        const vehicleIds = vehiclesSnapshot.docs.map(doc => doc.id);
+        log('Vehicle IDs found: ' + JSON.stringify(vehicleIds));
+
+        // Step 2: Find all bookings for those vehicles
+        // Note: Firestore has a limit of 10 for 'in' queries.
+        // If an owner has more than 10 vehicles, this needs a more complex query.
+        // For now, assuming vehicleIds.length <= 10.
+        const bookingsRef = db.collection('bookings').where('vehicleId', 'in', vehicleIds);
+        const bookingsSnapshot = await bookingsRef.get();
+
+        log(`Found ${bookingsSnapshot.size} bookings for these vehicles.`);
+        if (bookingsSnapshot.empty) {
+            log('No bookings found for owner\'s vehicles.');
+            return res.status(200).json([]);
+        }
+
+        const bookings = [];
+        for (const doc of bookingsSnapshot.docs) {
+            const bookingData = doc.data();
+            // Find the vehicle data from the already fetched vehiclesSnapshot
+            const vehicleDocData = vehiclesSnapshot.docs.find(vDoc => vDoc.id === bookingData.vehicleId)?.data();
+
+            // Fetch renter data
+            const renterDoc = await db.collection('users').doc(bookingData.renterId).get();
+            const renterData = renterDoc.exists ? renterDoc.data() : null;
+
+            log(`Processing booking ${doc.id}: VehicleId=${bookingData.vehicleId}, RenterId=${bookingData.renterId}`);
+            log(`  Vehicle Data Found: ${!!vehicleDocData}`);
+            log(`  Renter Data Found: ${!!renterData}`);
+
+            const startDate = convertToDate(bookingData.startDate);
+            const endDate = convertToDate(bookingData.endDate);
+            const createdAt = convertToDate(bookingData.createdAt);
+
+            bookings.push({
+                id: doc.id,
+                ...bookingData,
+                startDate: startDate ? startDate.toISOString() : null,
+                endDate: endDate ? endDate.toISOString() : null,
+                createdAt: createdAt ? createdAt.toISOString() : null,
+                renterDetails: renterData ? {
+                    id: renterDoc.id,
+                    username: renterData.username,
+                    email: renterData.email,
+                } : null,
+                vehicleDetails: vehicleDocData ? {
+                    id: bookingData.vehicleId,
+                    make: vehicleDocData.make,
+                    model: vehicleDocData.model,
+                    year: vehicleDocData.year,
+                    imageUrl: vehicleDocData.imageUrl,
+                    rentalPricePerDay: vehicleDocData.rentalPricePerDay,
+                } : null,
+            });
+        }
+
+        log(`Successfully fetched and formatted ${bookings.length} bookings for owner's vehicles.`);
+        // Log the final formatted bookings (or a sample of them)
+        log('Sample formatted booking: ' + JSON.stringify(bookings[0] || {}));
+        res.status(200).json(bookings);
+    } catch (error) {
+        console.error('[BookingController] Error fetching owner bookings:', error);
+        res.status(500).json({ message: 'Error fetching owner bookings.', error: error.message });
+    }
+};
+
 module.exports = {
-    getAllBookings, // ADDED THIS EXPORT
+    getAllBookings,
     createBooking,
     apiCheckAvailability,
     getBookingsByUser,
@@ -487,4 +574,5 @@ module.exports = {
     updateBookingPaymentMethod,
     updateBookingStatus,
     deleteBooking,
+    getOwnerBookings,
 };

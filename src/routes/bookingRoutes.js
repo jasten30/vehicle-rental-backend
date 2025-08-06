@@ -4,29 +4,35 @@ const router = express.Router();
 const bookingController = require('../controllers/bookingController');
 const authMiddleware = require('../middleware/authMiddleware');
 
-// Public route to get ALL bookings (e.g., for admin overview or general listing if applicable)
-// This was the missing route handler causing the TypeError.
-router.get('/', bookingController.getAllBookings);
+// Route to get all bookings (admin only)
+router.get('/', authMiddleware.verifyToken, authMiddleware.authorizeRole(['admin']), bookingController.getAllBookings);
 
-// Route to create a new booking (requires authentication)
-router.post('/', authMiddleware.verifyToken, authMiddleware.authorizeRole(['renter', 'admin']), bookingController.createBooking); // Added 'admin' role here
+// Route for owners to get bookings for all their vehicles
+router.get('/owner', authMiddleware.verifyToken, authMiddleware.authorizeRole(['owner', 'admin']), bookingController.getOwnerBookings);
 
-// Route to check vehicle availability for specific dates (GET request, parameters in query)
-router.get('/availability/:vehicleId', authMiddleware.verifyToken, authMiddleware.authorizeRole(['renter', 'owner', 'admin']), bookingController.apiCheckAvailability); // Added 'owner', 'admin'
+// Route to get bookings by a specific user (renter or self-access)
+// We remove authorizeRole to handle the permission check in the controller
+router.get('/user/:userId', authMiddleware.verifyToken, bookingController.getBookingsByUser);
 
-// Routes for getting bookings (e.g., for a user or vehicle)
-router.get('/user/:userId', authMiddleware.verifyToken, authMiddleware.authorizeRole(['renter', 'owner', 'admin']), bookingController.getBookingsByUser);
-router.get('/vehicle/:vehicleId', authMiddleware.verifyToken, authMiddleware.authorizeRole(['owner', 'admin']), bookingController.getBookingsByVehicle);
-router.get('/:bookingId', authMiddleware.verifyToken, authMiddleware.authorizeRole(['renter', 'owner', 'admin']), bookingController.getBookingById);
+// Route to get all bookings for a specific vehicle
+router.get('/vehicle/:vehicleId', authMiddleware.verifyToken, bookingController.getBookingsByVehicle);
 
-// Route to update a booking's payment method (renter can update their own booking)
-router.put('/:bookingId/payment-method', authMiddleware.verifyToken, authMiddleware.authorizeRole(['renter', 'admin']), bookingController.updateBookingPaymentMethod);
+// Route to check vehicle availability
+router.get('/availability/:vehicleId', authMiddleware.verifyToken, bookingController.apiCheckAvailability);
 
-// Route to update booking status (typically admin/owner function)
+// Route to get a single booking by its ID
+router.get('/:bookingId', authMiddleware.verifyToken, bookingController.getBookingById);
+
+// Route to create a new booking
+router.post('/', authMiddleware.verifyToken, authMiddleware.authorizeRole(['renter']), bookingController.createBooking);
+
+// Route to update a booking's payment method (renter only)
+router.put('/:bookingId/payment-method', authMiddleware.verifyToken, authMiddleware.authorizeRole(['renter']), bookingController.updateBookingPaymentMethod);
+
+// Route to update a booking's status (admin/owner only)
 router.put('/:bookingId/status', authMiddleware.verifyToken, authMiddleware.authorizeRole(['owner', 'admin']), bookingController.updateBookingStatus);
 
-// Route to delete a booking (typically admin/owner function)
-router.delete('/:bookingId', authMiddleware.verifyToken, authMiddleware.authorizeRole(['owner', 'admin']), bookingController.deleteBooking);
-
+// Route to delete a booking (admin only)
+router.delete('/:bookingId', authMiddleware.verifyToken, authMiddleware.authorizeRole(['admin']), bookingController.deleteBooking);
 
 module.exports = router;

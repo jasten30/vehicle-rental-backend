@@ -20,18 +20,19 @@ const convertToDate = (value) => {
 };
 
 /**
- * Initiates a manual payment process (Cash on Pickup or QR Code Scan) with downpayment logic.
+ * Initiates a manual payment process (Cash on Pickup or QR Code Scan) for the full amount.
  * This endpoint does NOT process actual payments but sets the booking status
  * to pending for manual verification.
  */
 const initiateManualPayment = async (req, res) => {
     try {
-        const { amount, currency = 'PHP', bookingDetails, paymentMethodType } = req.body;
+        // Renamed 'amount' to 'totalCost' for clarity since it's now the full amount
+        const { totalCost, currency = 'PHP', bookingDetails, paymentMethodType } = req.body;
         const userId = req.customUser.uid; // Accessing UID from customUser set by authMiddleware
 
-        log(`Initiating manual payment with downpayment for amount: ${amount} ${currency} with type: ${paymentMethodType}`);
+        log(`Initiating manual payment for total cost: ${totalCost} ${currency} with type: ${paymentMethodType}`);
 
-        if (!amount || amount <= 0) {
+        if (!totalCost || totalCost <= 0) {
             return res.status(400).json({ message: 'Invalid amount provided for payment.' });
         }
         if (!['cash', 'qr_manual'].includes(paymentMethodType)) {
@@ -41,19 +42,8 @@ const initiateManualPayment = async (req, res) => {
             return res.status(400).json({ message: 'Missing booking details.' });
         }
 
-        // --- Downpayment Logic ---
-        const DOWNPAYMENT_PERCENTAGE = 0.30; // 30% downpayment
-        // The 2-day refund grace period starts *after* downpayment is received (see updateBookingPaymentStatus)
-
-        const totalCost = parseFloat(amount);
-        const downpaymentAmount = (totalCost * DOWNPAYMENT_PERCENTAGE).toFixed(2);
-        const fullPaymentAmount = (totalCost - downpaymentAmount).toFixed(2);
-
-        // This due date is for the downpayment itself
-        const downpaymentDueDate = admin.firestore.Timestamp.fromMillis(
-            Date.now() + 2 * 24 * 60 * 60 * 1000 // 2 days to pay downpayment from booking initiation
-        );
-        // --- End Downpayment Logic ---
+        // --- Downpayment Logic Removed ---
+        // The code now assumes the full payment is processed at once.
 
         const bookingRef = db.collection('bookings').doc(); // Create a new doc reference for ID
         const bookingId = bookingRef.id; // Get the auto-generated ID
@@ -63,9 +53,6 @@ const initiateManualPayment = async (req, res) => {
         let paymentDetails = {
             method: paymentMethodType,
             totalCost: totalCost,
-            downpaymentAmount: parseFloat(downpaymentAmount),
-            fullPaymentAmount: parseFloat(fullPaymentAmount),
-            downpaymentDueDate: downpaymentDueDate,
             currency: currency,
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
             userId: userId,
@@ -76,19 +63,21 @@ const initiateManualPayment = async (req, res) => {
         };
 
         if (paymentMethodType === 'cash') {
-            paymentStatus = 'pending_cash_downpayment'; // New status for cash downpayment
-            message = `Booking created. Please pay ₱${downpaymentAmount} downpayment in cash upon vehicle pickup by ${new Date(downpaymentDueDate.toDate()).toLocaleDateString()}. Remaining ₱${fullPaymentAmount} due on final pickup.`;
-            log('Booking set to pending_cash_downpayment.');
+            // Updated status to reflect a single, pending cash payment
+            paymentStatus = 'pending_cash_payment';
+            message = `Booking created. Please pay ₱${totalCost} in cash upon vehicle pickup.`;
+            log('Booking set to pending_cash_payment.');
         } else if (paymentMethodType === 'qr_manual') {
-            paymentStatus = 'awaiting_qr_downpayment'; // New status for QR downpayment
-            message = `Booking created. Please complete ₱${downpaymentAmount} downpayment via QR scan by ${new Date(downpaymentDueDate.toDate()).toLocaleDateString()}. Remaining ₱${fullPaymentAmount} due on final pickup.`;
-            log('Booking set to awaiting_qr_downpayment.');
-            
+            // Updated status to reflect a single, pending QR payment
+            paymentStatus = 'awaiting_qr_payment';
+            message = `Booking created. Please complete ₱${totalCost} payment via QR scan.`;
+            log('Booking set to awaiting_qr_payment.');
+
             paymentDetails.qrCodeInfo = {
                 qrImageUrl: 'https://placehold.co/300x300/228B22/FFFFFF?text=GCash+QR', // Placeholder QR
-                instructions: `Scan this QR code with your GCash/Maya app. Enter exact amount (₱${downpaymentAmount}) and include booking ID as reference: ${bookingId}`,
+                instructions: `Scan this QR code with your GCash/Maya app. Enter exact amount (₱${totalCost}) and include booking ID as reference: ${bookingId}`,
                 qrRefId: bookingId, // This is the reference user should put in notes
-                amountToPay: parseFloat(downpaymentAmount), // Amount for QR scan
+                amountToPay: parseFloat(totalCost), // Amount for QR scan is now the full cost
             };
         }
 
@@ -97,9 +86,6 @@ const initiateManualPayment = async (req, res) => {
             ...bookingDetails,
             renterId: userId,
             totalCost: totalCost,
-            downpaymentAmount: parseFloat(downpaymentAmount),
-            fullPaymentAmount: parseFloat(fullPaymentAmount),
-            downpaymentDueDate: downpaymentDueDate,
             paymentStatus: paymentStatus,
             paymentDetails: paymentDetails, // Contains QR info if applicable
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -109,7 +95,7 @@ const initiateManualPayment = async (req, res) => {
             bookingId: bookingId,
             status: paymentStatus,
             message: message,
-            paymentDetails: paymentDetails, // Include QR info and downpayment details
+            paymentDetails: paymentDetails, // Include QR info and payment details
         });
 
     } catch (error) {
@@ -119,7 +105,7 @@ const initiateManualPayment = async (req, res) => {
 };
 
 /**
- * Endpoint for user to "confirm" a manual QR downpayment.
+ * Endpoint for user to "confirm" a manual QR payment.
  */
 const confirmManualQrPayment = async (req, res) => {
     try {
@@ -143,19 +129,21 @@ const confirmManualQrPayment = async (req, res) => {
             return res.status(403).json({ message: 'Unauthorized to confirm this booking.' });
         }
 
-        if (bookingData.paymentStatus !== 'awaiting_qr_downpayment') {
+        // Updated status check to the new status
+        if (bookingData.paymentStatus !== 'awaiting_qr_payment') {
             return res.status(400).json({ message: `Cannot confirm payment for booking with status: ${bookingData.paymentStatus}` });
         }
 
+        // Updated status to reflect full payment confirmation by user
         await bookingDocRef.update({
-            paymentStatus: 'qr_downpayment_confirmed_by_user',
+            paymentStatus: 'qr_payment_confirmed_by_user',
             paymentConfirmationTimestamp: admin.firestore.FieldValue.serverTimestamp(),
         });
 
-        log(`Booking ${bookingId} status updated to qr_downpayment_confirmed_by_user by user ${userId}.`);
+        log(`Booking ${bookingId} status updated to qr_payment_confirmed_by_user by user ${userId}.`);
         res.status(200).json({
-            message: 'Your downpayment confirmation has been received. We will verify it shortly.',
-            status: 'qr_downpayment_confirmed_by_user',
+            message: 'Your payment confirmation has been received. We will verify it shortly.',
+            status: 'qr_payment_confirmed_by_user',
         });
 
     } catch (error) {
@@ -173,7 +161,8 @@ const updateBookingPaymentStatus = async (req, res) => {
 
         log(`Admin attempting to update booking ${bookingId} to status: ${newStatus}`);
 
-        if (!bookingId || !newStatus || !['downpayment_received', 'full_payment_received', 'cancelled_no_downpayment', 'cancelled_by_user_after_grace_period', 'refunded', 'cancelled_within_grace_period'].includes(newStatus)) {
+        // Simplified list of valid statuses
+        if (!bookingId || !newStatus || !['full_payment_received', 'cancelled_by_user', 'refunded'].includes(newStatus)) {
             return res.status(400).json({ message: 'Invalid booking ID or new status.' });
         }
 
@@ -189,14 +178,8 @@ const updateBookingPaymentStatus = async (req, res) => {
             lastStatusUpdate: admin.firestore.FieldValue.serverTimestamp(),
         };
 
-        if (newStatus === 'downpayment_received') {
-            const GRACE_PERIOD_HOURS = 2 * 24;
-            updateData.downpaymentReceivedAt = admin.firestore.FieldValue.serverTimestamp();
-            updateData.cancellationGracePeriodEnd = admin.firestore.Timestamp.fromMillis(
-                Date.now() + GRACE_PERIOD_HOURS * 60 * 60 * 1000
-            );
-            log(`Downpayment received for booking ${bookingId}. Cancellation grace period ends at ${new Date(updateData.cancellationGracePeriodEnd.toDate()).toLocaleString()}.`);
-        } else if (newStatus === 'full_payment_received') {
+        // No more downpayment-specific updates
+        if (newStatus === 'full_payment_received') {
             updateData.fullPaymentReceivedAt = admin.firestore.FieldValue.serverTimestamp();
         }
 
@@ -238,31 +221,13 @@ const cancelBooking = async (req, res) => {
             return res.status(403).json({ message: 'Unauthorized to cancel this booking.' });
         }
 
-        if (['full_payment_received', 'cancelled_no_downpayment', 'cancelled_by_user_after_grace_period', 'cancelled_within_grace_period', 'refunded'].includes(bookingData.paymentStatus)) {
-            return res.status(400).json({ message: `Booking cannot be cancelled from its current status: ${bookingData.paymentStatus}` });
+        // Simplified status check and new status for cancellation
+        if (['full_payment_received', 'cancelled_by_user', 'refunded'].includes(bookingData.paymentStatus)) {
+             return res.status(400).json({ message: `Booking cannot be cancelled from its current status: ${bookingData.paymentStatus}` });
         }
 
-        let newStatus;
-        let refundEligibility = false;
-        const now = admin.firestore.Timestamp.now();
-
-        if (bookingData.paymentStatus === 'awaiting_qr_downpayment' || bookingData.paymentStatus === 'pending_cash_downpayment' || bookingData.paymentStatus === 'qr_downpayment_confirmed_by_user') {
-            newStatus = 'cancelled_no_downpayment';
-            refundEligibility = false;
-            log(`Booking ${bookingId} cancelled before downpayment received. Status: ${newStatus}`);
-        } else if (bookingData.paymentStatus === 'downpayment_received') {
-            if (bookingData.cancellationGracePeriodEnd && now.toMillis() <= bookingData.cancellationGracePeriodEnd.toMillis()) {
-                newStatus = 'cancelled_within_grace_period';
-                refundEligibility = true;
-                log(`Booking ${bookingId} cancelled within grace period. Status: ${newStatus}, Eligible for refund.`);
-            } else {
-                newStatus = 'cancelled_by_user_after_grace_period';
-                refundEligibility = false;
-                log(`Booking ${bookingId} cancelled after grace period. Status: ${newStatus}, Downpayment forfeited.`);
-            }
-        } else {
-            return res.status(400).json({ message: `Cannot cancel booking with current status: ${bookingData.paymentStatus}` });
-        }
+        const newStatus = 'cancelled_by_user';
+        const refundEligibility = bookingData.paymentStatus === 'qr_payment_confirmed_by_user'; // Refund only if payment was confirmed
 
         await bookingDocRef.update({
             paymentStatus: newStatus,
@@ -270,10 +235,9 @@ const cancelBooking = async (req, res) => {
         });
 
         res.status(200).json({
-            message: `Booking ${bookingId} has been cancelled. ${refundEligibility ? 'You are eligible for a downpayment refund.' : 'The downpayment is non-refundable as per policy.'}`,
+            message: `Booking ${bookingId} has been cancelled. ${refundEligibility ? 'You may be eligible for a refund. Contact support.' : 'No payment was made, so no refund is applicable.'}`,
             status: newStatus,
             refundEligible: refundEligibility,
-            downpaymentAmount: bookingData.downpaymentAmount,
         });
 
     } catch (error) {
@@ -325,16 +289,11 @@ const getPaymentStatus = async (req, res) => {
         // Apply convertToDate helper to all date fields before sending to frontend
         const startDate = convertToDate(bookingData.startDate);
         const endDate = convertToDate(bookingData.endDate);
-        const downpaymentDueDate = convertToDate(bookingData.downpaymentDueDate);
-        const cancellationGracePeriodEnd = convertToDate(bookingData.cancellationGracePeriodEnd);
 
+        // Removed downpayment-specific fields from the response
         res.status(200).json({
             status: bookingData.paymentStatus,
             totalCost: bookingData.totalCost,
-            downpaymentAmount: bookingData.downpaymentAmount,
-            fullPaymentAmount: bookingData.fullPaymentAmount,
-            downpaymentDueDate: downpaymentDueDate ? downpaymentDueDate.toISOString() : null,
-            cancellationGracePeriodEnd: cancellationGracePeriodEnd ? cancellationGracePeriodEnd.toISOString() : null,
             currency: bookingData.paymentDetails?.currency || 'PHP',
             message: `Booking status is ${bookingData.paymentStatus}`,
             qrCodeInfo: bookingData.paymentDetails?.qrCodeInfo || null,

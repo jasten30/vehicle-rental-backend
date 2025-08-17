@@ -1,3 +1,4 @@
+// backend/src/controllers/bookingController.js
 const { admin, db } = require('../utils/firebase');
 
 // Helper function for consistent logging
@@ -68,15 +69,16 @@ const getAllBookings = async (req, res) => {
     }
 };
 
-
 /**
  * Creates a new booking.
  */
 const createBooking = async (req, res) => {
     try {
-        const { vehicleId, startDate, endDate, totalCost, downpaymentAmount, fullPaymentAmount, paymentStatus, paymentDetails } = req.body;
+        // Removed downpaymentAmount and fullPaymentAmount from the request body
+        const { vehicleId, startDate, endDate, totalCost, paymentStatus, paymentDetails } = req.body;
         const renterId = req.customUser.uid;
 
+        // Simplified validation as downpayment fields are no longer required
         if (!vehicleId || !startDate || !endDate || !totalCost || !paymentStatus) {
             return res.status(400).json({ message: 'Missing required booking fields.' });
         }
@@ -99,8 +101,7 @@ const createBooking = async (req, res) => {
             startDate: admin.firestore.Timestamp.fromDate(start),
             endDate: admin.firestore.Timestamp.fromDate(end),
             totalCost: parseFloat(totalCost),
-            downpaymentAmount: parseFloat(downpaymentAmount || 0),
-            fullPaymentAmount: parseFloat(fullPaymentAmount || 0),
+            // Removed downpaymentAmount and fullPaymentAmount fields from the document
             paymentStatus,
             paymentDetails: paymentDetails || {},
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -162,9 +163,10 @@ const apiCheckAvailability = async (req, res) => {
             }
         }
 
+        // The query now only checks for bookings with a single "Confirmed" status
         const bookingsRef = db.collection('bookings')
             .where('vehicleId', '==', vehicleId)
-            .where('paymentStatus', 'in', ['downpayment_received', 'full_payment_received', 'pending_cash_downpayment', 'awaiting_qr_downpayment', 'qr_downpayment_confirmed_by_user']);
+            .where('paymentStatus', '==', 'Confirmed');
 
         const snapshot = await bookingsRef.get();
         const overlappingBookings = [];
@@ -202,17 +204,13 @@ const apiCheckAvailability = async (req, res) => {
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
 
         const totalCost = parseFloat((rentalPricePerDay * diffDays).toFixed(2));
-        const downpaymentPercentage = 0.20;
-        const downpaymentAmount = parseFloat((totalCost * downpaymentPercentage).toFixed(2));
-        const fullPaymentAmount = parseFloat((totalCost - downpaymentAmount).toFixed(2));
-
-        log(`Vehicle ${vehicleId} is available. Calculated costs: Total=${totalCost}, Downpayment=${downpaymentAmount}, Full=${fullPaymentAmount}`);
+        
+        // Removed downpayment and full payment calculations and their response fields
+        log(`Vehicle ${vehicleId} is available. Calculated costs: Total=${totalCost}`);
         res.status(200).json({
             isAvailable: true,
             message: 'Vehicle is available for the selected dates.',
             totalCost,
-            downpaymentAmount,
-            fullPaymentAmount,
         });
 
     } catch (error) {
@@ -255,9 +253,8 @@ const getBookingsByUser = async (req, res) => {
             const renterData = renterDoc.exists ? renterDoc.data() : null;
 
             log(`Processing booking ${doc.id}: VehicleId=${bookingData.vehicleId}, RenterId=${bookingData.renterId}`);
-            // FIXED: Using correct variable name `vehicleData`
-            log(`   Vehicle Data Found: ${!!vehicleData}`);
-            log(`   Renter Data Found: ${!!renterData}`);
+            log(`    Vehicle Data Found: ${!!vehicleData}`);
+            log(`    Renter Data Found: ${!!renterData}`);
 
             const startDate = convertToDate(bookingData.startDate);
             const endDate = convertToDate(bookingData.endDate);
@@ -401,8 +398,7 @@ const getBookingById = async (req, res) => {
         const startDate = convertToDate(bookingData.startDate);
         const endDate = convertToDate(bookingData.endDate);
         const createdAt = convertToDate(bookingData.createdAt);
-        const downpaymentDueDate = convertToDate(bookingData.downpaymentDueDate);
-        const cancellationGracePeriodEnd = convertToDate(bookingData.cancellationGracePeriodEnd);
+        // Removed downpaymentDueDate and cancellationGracePeriodEnd fields from the document
 
         log(`Successfully fetched booking: ${bookingId}`);
         res.status(200).json({
@@ -411,8 +407,7 @@ const getBookingById = async (req, res) => {
             startDate: startDate ? startDate.toISOString() : null,
             endDate: endDate ? endDate.toISOString() : null,
             createdAt: createdAt ? createdAt.toISOString() : null,
-            downpaymentDueDate: downpaymentDueDate ? downpaymentDueDate.toISOString() : null,
-            cancellationGracePeriodEnd: cancellationGracePeriodEnd ? cancellationGracePeriodEnd.toISOString() : null,
+            // Removed downpaymentDueDate and cancellationGracePeriodEnd fields from the response
             vehicleDetails: vehicleData ? {
                 id: vehicleDoc.id,
                 make: vehicleData.make,
@@ -454,17 +449,8 @@ const updateBookingStatus = async (req, res) => {
             paymentStatus: newStatus,
             lastStatusUpdate: admin.firestore.FieldValue.serverTimestamp(),
         };
-
-        if (newStatus === 'downpayment_received') {
-            const GRACE_PERIOD_HOURS = 2 * 24;
-            updateData.downpaymentReceivedAt = admin.firestore.FieldValue.serverTimestamp();
-            updateData.cancellationGracePeriodEnd = admin.firestore.Timestamp.fromMillis(
-                Date.now() + GRACE_PERIOD_HOURS * 60 * 60 * 1000
-            );
-            log(`Downpayment received for booking ${bookingId}. Cancellation grace period ends at ${new Date(updateData.cancellationGracePeriodEnd.toDate()).toLocaleString()}.`);
-        } else if (newStatus === 'full_payment_received') {
-            updateData.fullPaymentReceivedAt = admin.firestore.FieldValue.serverTimestamp();
-        }
+        
+        // Removed the conditional logic that handles the 'downpayment_received' status.
 
         await bookingRef.update(updateData);
 
@@ -517,9 +503,6 @@ const getOwnerBookings = async (req, res) => {
         log('Vehicle IDs found: ' + JSON.stringify(vehicleIds));
 
         // Step 2: Find all bookings for those vehicles
-        // Note: Firestore has a limit of 10 for 'in' queries.
-        // If an owner has more than 10 vehicles, this needs a more complex query.
-        // For now, assuming vehicleIds.length <= 10.
         const bookingsRef = db.collection('bookings').where('vehicleId', 'in', vehicleIds);
         const bookingsSnapshot = await bookingsRef.get();
 
@@ -532,17 +515,14 @@ const getOwnerBookings = async (req, res) => {
         const bookings = [];
         for (const doc of bookingsSnapshot.docs) {
             const bookingData = doc.data();
-            // Find the vehicle data from the already fetched vehiclesSnapshot
             const vehicleDocData = vehiclesSnapshot.docs.find(vDoc => vDoc.id === bookingData.vehicleId)?.data();
 
-            // Fetch renter data
             const renterDoc = await db.collection('users').doc(bookingData.renterId).get();
             const renterData = renterDoc.exists ? renterDoc.data() : null;
 
             log(`Processing booking ${doc.id}: VehicleId=${bookingData.vehicleId}, RenterId=${bookingData.renterId}`);
-            // FIXED: Using correct variable name `vehicleDocData`
-            log(`   Vehicle Data Found: ${!!vehicleDocData}`);
-            log(`   Renter Data Found: ${!!renterData}`);
+            log(`    Vehicle Data Found: ${!!vehicleDocData}`);
+            log(`    Renter Data Found: ${!!renterData}`);
 
             const startDate = convertToDate(bookingData.startDate);
             const endDate = convertToDate(bookingData.endDate);

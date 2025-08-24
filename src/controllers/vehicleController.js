@@ -1,4 +1,5 @@
 const { admin, db, storageBucket } = require('../utils/firebase'); // Import storageBucket
+const axios = require('axios'); // Import axios for making HTTP requests
 
 /**
  * Helper function to upload a Base64 image to Firebase Storage.
@@ -35,6 +36,43 @@ const uploadBase64Image = async (base64String, folderName = 'vehicle_images') =>
 };
 
 /**
+ * Helper function to geocode a location string into latitude and longitude.
+ * Uses the Nominatim OpenStreetMap API.
+ * @param {string} location The address or location string to geocode.
+ * @returns {Promise<{ lat: number, lon: number } | null>}
+ */
+const geocodeLocation = async (location) => {
+    if (!location) {
+        return null;
+    }
+    try {
+        const response = await axios.get('https://nominatim.openstreetmap.org/search', {
+            params: {
+                q: location,
+                format: 'json',
+                limit: 1
+            },
+            headers: {
+                'User-Agent': 'Car-Rental-App/1.0 (contact@your-app-domain.com)'
+            }
+        });
+
+        const data = response.data;
+        if (data && data.length > 0) {
+            return {
+                lat: parseFloat(data[0].lat),
+                lon: parseFloat(data[0].lon)
+            };
+        } else {
+            return null;
+        }
+    } catch (error) {
+        console.error('[VehicleController] Geocoding failed:', error.message);
+        return null;
+    }
+};
+
+/**
  * Get all vehicles.
  */
 const getAllVehicles = async (req, res) => {
@@ -45,7 +83,7 @@ const getAllVehicles = async (req, res) => {
 
         if (snapshot.empty) {
             console.log('[VehicleController] No vehicles found.');
-            return res.status(200).json([]); // Return an empty array if no vehicles
+            return res.status(200).json([]);
         }
 
         const vehicles = [];
@@ -54,7 +92,6 @@ const getAllVehicles = async (req, res) => {
             vehicles.push({
                 id: doc.id,
                 ...data,
-                // Ensure dates are ISO strings if they are Firestore Timestamps
                 createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null,
                 updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
                 availability: data.availability ? data.availability.map(range => ({
@@ -111,26 +148,63 @@ const getVehicleById = async (req, res) => {
  */
 const addVehicle = async (req, res) => {
     try {
-        const { make, model, year, licensePlate, rentalPricePerDay, description, imageUrl, location } = req.body;
-        const ownerId = req.customUser.uid; // Owner is the authenticated user
+        const {
+            make, model, year, licensePlate, rentalPricePerDay, description, location, seatingCapacity, availability,
+            crImageUrl, orImageUrl, userProfileImageUrl, driversLicenseImageUrl, exteriorPhotoUrl, interiorPhotoUrl,
+            safetyChecklist, safetyNotes, photos, // FIX: Added the 'photos' array from the frontend payload
+            // FIX: Added other fields sent from the frontend
+            driversLicenseNumber,
+            mobileNumber,
+            qrCodeUrl,
+        } = req.body;
+        const ownerId = req.customUser.uid;
 
-        if (!make || !model || !year || !licensePlate || !rentalPricePerDay || !ownerId || !location) {
-            return res.status(400).json({ message: 'Missing required vehicle fields.' });
+        // FIX: The backend will now check for all the required fields.
+        if (!make || !model || !year || !licensePlate || !rentalPricePerDay || !ownerId || !location || !photos || photos.length === 0) {
+            console.error('[VehicleController] Missing required fields for adding a vehicle.');
+            return res.status(400).json({ message: 'Missing required vehicle fields. Please fill out all steps and upload at least one photo.' });
         }
 
-        let finalImageUrl = imageUrl || ''; // Default to empty string
+        const coordinates = await geocodeLocation(location);
+        if (!coordinates) {
+            console.error('[VehicleController] Invalid location provided.');
+            return res.status(400).json({ message: 'Could not find a valid location for the provided address.' });
+        }
 
-        // If imageUrl is a Base64 string, upload it to storage
-        if (imageUrl && imageUrl.startsWith('data:image/')) {
-            console.log('[VehicleController] Image is Base64, uploading to Firebase Storage...');
-            try {
-                finalImageUrl = await uploadBase64Image(imageUrl);
-            } catch (uploadError) {
-                console.error('[VehicleController] Failed to upload Base64 image:', uploadError);
-                return res.status(500).json({ message: 'Failed to upload image.', error: uploadError.message });
+        // FIX: Combine all image uploads into a single array for processing
+        const allImagesToUpload = [
+            { field: 'crImageUrl', url: crImageUrl, folder: 'documents' },
+            { field: 'orImageUrl', url: orImageUrl, folder: 'documents' },
+            { field: 'userProfileImageUrl', url: userProfileImageUrl, folder: 'user_profiles' },
+            { field: 'driversLicenseImageUrl', url: driversLicenseImageUrl, folder: 'documents' },
+            ...photos.map((url, index) => ({
+                field: `photo_${index}`,
+                url,
+                folder: 'vehicle_photos'
+            }))
+        ];
+
+        const uploadedImageUrls = {};
+        const uploadedPhotoUrls = [];
+
+        for (const image of allImagesToUpload) {
+            if (image.url && image.url.startsWith('data:image/')) {
+                const publicUrl = await uploadBase64Image(image.url, image.folder);
+                if (image.field.startsWith('photo_')) {
+                    uploadedPhotoUrls.push(publicUrl);
+                } else {
+                    uploadedImageUrls[image.field] = publicUrl;
+                }
+            } else if (image.url) {
+                // If the URL is not a Base64 string, assume it's already a public URL
+                if (image.field.startsWith('photo_')) {
+                    uploadedPhotoUrls.push(image.url);
+                } else {
+                    uploadedImageUrls[image.field] = image.url;
+                }
             }
         }
-
+        
         const newVehicle = {
             make,
             model,
@@ -138,12 +212,31 @@ const addVehicle = async (req, res) => {
             licensePlate,
             rentalPricePerDay: parseFloat(rentalPricePerDay),
             description: description || '',
-            imageUrl: finalImageUrl, // Use the uploaded URL or original URL
             ownerId,
             location,
+            latitude: coordinates.lat,
+            longitude: coordinates.lon,
+            seatingCapacity,
+            availability: availability || [],
+            safety: {
+                checklist: safetyChecklist,
+                notes: safetyNotes
+            },
+            // FIX: Store the new fields from the frontend
+            driversLicenseNumber,
+            mobileNumber,
+            qrCodeUrl,
+            // FIX: Use the new uploaded image URLs
+            crImageUrl: uploadedImageUrls.crImageUrl || '',
+            orImageUrl: uploadedImageUrls.orImageUrl || '',
+            userProfileImageUrl: uploadedImageUrls.userProfileImageUrl || '',
+            driversLicenseImageUrl: uploadedImageUrls.driversLicenseImageUrl || '',
+            // FIX: Use the new array of photo URLs
+            photos: uploadedPhotoUrls,
+            exteriorPhotoUrl: uploadedPhotoUrls[0] || '', // Set first photo as exterior
+            interiorPhotoUrl: uploadedPhotoUrls[1] || '', // Set second photo as interior
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-            availability: [],
         };
 
         const docRef = await db.collection('vehicles').add(newVehicle);
@@ -162,7 +255,7 @@ const updateVehicle = async (req, res) => {
     try {
         const { id } = req.params;
         const updates = req.body;
-        const ownerId = req.customUser.uid; // Ensure only owner can update their vehicle
+        const ownerId = req.customUser.uid;
 
         console.log(`[VehicleController] Attempting to update vehicle ID: ${id} by owner: ${ownerId}`);
 
@@ -175,37 +268,59 @@ const updateVehicle = async (req, res) => {
         }
 
         if (vehicleDoc.data().ownerId !== ownerId) {
-            console.warn(`[VehicleController] Unauthorized attempt to update vehicle ${id} by user ${ownerId}. Owner is ${vehicleDoc.data().ownerId}`);
+            console.warn(`[VehicleController] Unauthorized attempt to update vehicle ${id} by user ${ownerId}.`);
             return res.status(403).json({ message: 'Unauthorized: You do not own this vehicle.' });
         }
 
-        let finalImageUrl = updates.imageUrl; // Start with the provided imageUrl
-
-        // If imageUrl is a Base64 string, upload it to storage
-        if (updates.imageUrl && updates.imageUrl.startsWith('data:image/')) {
-            console.log('[VehicleController] Image is Base64, uploading to Firebase Storage for update...');
-            try {
-                finalImageUrl = await uploadBase64Image(updates.imageUrl);
-            } catch (uploadError) {
-                console.error('[VehicleController] Failed to upload Base64 image during update:', uploadError);
-                return res.status(500).json({ message: 'Failed to upload image during update.', error: uploadError.message });
+        if (updates.location) {
+            const coordinates = await geocodeLocation(updates.location);
+            if (!coordinates) {
+                return res.status(400).json({ message: 'Could not find a valid location for the provided address.' });
             }
-        } else if (updates.imageUrl === '') {
-            // If imageUrl is explicitly set to empty, clear it
-            finalImageUrl = '';
+            updates.latitude = coordinates.lat;
+            updates.longitude = coordinates.lon;
         }
-        // If it's a regular URL, it remains as is.
 
-        const updatedData = {
-            ...updates,
-            imageUrl: finalImageUrl, // Use the new URL or original if no change/upload
-            updatedAt: admin.firestore.FieldValue.serverTimestamp()
-        };
+        // FIX: The update logic is now more robust. It handles Base64 image uploads and
+        // updates for all image fields, including the new 'photos' array.
+        const imageFields = ['userProfileImageUrl', 'crImageUrl', 'orImageUrl', 'driversLicenseImageUrl', 'exteriorPhotoUrl', 'interiorPhotoUrl'];
+        const updatedData = { ...updates };
+        const uploadedPhotoUrls = [];
+
+        // Handle the main photo fields
+        for (const field of imageFields) {
+            if (updatedData[field] && updatedData[field].startsWith('data:image/')) {
+                try {
+                    updatedData[field] = await uploadBase64Image(updatedData[field], 'vehicle_photos');
+                } catch (uploadError) {
+                    console.error(`[VehicleController] Failed to upload image for ${field}:`, uploadError);
+                    return res.status(500).json({ message: `Failed to upload image for ${field}.`, error: uploadError.message });
+                }
+            } else if (updatedData[field] === '') {
+                updatedData[field] = '';
+            }
+        }
+
+        // Handle the new 'photos' array
+        if (updatedData.photos && Array.isArray(updatedData.photos)) {
+            for (const url of updatedData.photos) {
+                if (url && url.startsWith('data:image/')) {
+                    const publicUrl = await uploadBase64Image(url, 'vehicle_photos');
+                    uploadedPhotoUrls.push(publicUrl);
+                } else if (url) {
+                    uploadedPhotoUrls.push(url); // Keep existing public URLs
+                }
+            }
+            updatedData.photos = uploadedPhotoUrls;
+            // Update exterior/interior URLs based on the new photos array
+            updatedData.exteriorPhotoUrl = uploadedPhotoUrls[0] || '';
+            updatedData.interiorPhotoUrl = uploadedPhotoUrls[1] || '';
+        }
+
 
         if (updatedData.year) updatedData.year = parseInt(updatedData.year);
         if (updatedData.rentalPricePerDay) updatedData.rentalPricePerDay = parseFloat(updatedData.rentalPricePerDay);
 
-        // Handle availability updates: ensure dates are converted if provided
         if (updatedData.availability && Array.isArray(updatedData.availability)) {
             updatedData.availability = updatedData.availability.map(range => ({
                 start: range.start ? new Date(range.start) : null,
@@ -213,6 +328,18 @@ const updateVehicle = async (req, res) => {
             }));
         }
 
+        // Ensure safety checklist and notes are correctly formatted
+        if (updatedData.safetyChecklist) {
+            updatedData.safety = {
+                checklist: updatedData.safetyChecklist,
+                notes: updatedData.safetyNotes
+            };
+            delete updatedData.safetyChecklist;
+            delete updatedData.safetyNotes;
+        }
+
+        updatedData.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+        
         await vehicleRef.update(updatedData);
         console.log(`[VehicleController] Vehicle ID ${id} updated successfully.`);
         res.status(200).json({ message: 'Vehicle updated successfully.', id });
@@ -241,7 +368,7 @@ const deleteVehicle = async (req, res) => {
         }
 
         if (vehicleDoc.data().ownerId !== ownerId) {
-            console.warn(`[VehicleController] Unauthorized attempt to delete vehicle ${id} by user ${ownerId}. Owner is ${vehicleDoc.data().ownerId}`);
+            console.warn(`[VehicleController] Unauthorized attempt to delete vehicle ${id} by user ${ownerId}.`);
             return res.status(403).json({ message: 'Unauthorized: You do not own this vehicle.' });
         }
 

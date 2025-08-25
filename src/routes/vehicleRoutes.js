@@ -4,17 +4,13 @@ const vehicleController = require('../controllers/vehicleController');
 const { verifyToken, authorizeRole } = require('../middleware/authMiddleware');
 
 // Public routes (no authentication required)
-router.get('/', vehicleController.getAllVehicles);
-router.get('/:id', vehicleController.getVehicleById);
-
-// Owner-specific routes (requires authentication and owner/admin role)
+// The more specific route must be defined first
 router.get('/my-listings', verifyToken, authorizeRole(['owner', 'admin']), vehicleController.getVehiclesByOwner);
+router.get('/:id', vehicleController.getVehicleById);
+router.get('/', vehicleController.getAllVehicles);
 
-// Admin, Owner, and Renter specific routes
-// FIXED: The addVehicle route now allows 'renter', 'admin', and 'owner' roles.
+// The rest of your routes are fine as they are
 router.post('/', verifyToken, authorizeRole(['admin', 'owner', 'renter']), vehicleController.addVehicle);
-
-// Admin and Owner specific routes (requires authentication and admin OR owner role)
 router.put('/:id', verifyToken, authorizeRole(['admin', 'owner']), vehicleController.updateVehicle);
 router.delete('/:id', verifyToken, authorizeRole(['admin', 'owner']), vehicleController.deleteVehicle);
 

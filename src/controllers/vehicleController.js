@@ -1,3 +1,4 @@
+// backend/controllers/vehicleController.js
 const { admin, db, storageBucket } = require('../utils/firebase'); // Import storageBucket
 const axios = require('axios'); // Import axios for making HTTP requests
 
@@ -36,40 +37,51 @@ const uploadBase64Image = async (base64String, folderName = 'vehicle_images') =>
 };
 
 /**
- * Helper function to geocode a location string into latitude and longitude.
- * Uses the Nominatim OpenStreetMap API.
- * @param {string} location The address or location string to geocode.
+ * Helper function to geocode a location object into latitude and longitude.
+ * Includes a fallback for more reliable results.
+ * @param {{barangay: string, city: string, region: string, country: string}} location The location object.
  * @returns {Promise<{ lat: number, lon: number } | null>}
  */
 const geocodeLocation = async (location) => {
-    if (!location) {
+    if (!location || !location.city || !location.country) {
+        console.error('[VehicleController] Geocoding requires at least a city and country.');
         return null;
     }
+    
+    // Attempt 1: Full address string
+    let query = `${location.barangay}, ${location.city}, ${location.region}, ${location.country}`;
     try {
         const response = await axios.get('https://nominatim.openstreetmap.org/search', {
-            params: {
-                q: location,
-                format: 'json',
-                limit: 1
-            },
-            headers: {
-                'User-Agent': 'Car-Rental-App/1.0 (contact@your-app-domain.com)'
-            }
+            params: { q: query, format: 'json', limit: 1 },
+            headers: { 'User-Agent': 'Car-Rental-App/1.0' }
         });
-
-        const data = response.data;
-        if (data && data.length > 0) {
-            return {
-                lat: parseFloat(data[0].lat),
-                lon: parseFloat(data[0].lon)
-            };
-        } else {
-            return null;
+        if (response.data && response.data.length > 0) {
+            console.log('[VehicleController] Geocoding successful with full address.');
+            return { lat: parseFloat(response.data[0].lat), lon: parseFloat(response.data[0].lon) };
         }
     } catch (error) {
-        console.error('[VehicleController] Geocoding failed:', error.message);
-        return null;
+        console.warn(`[VehicleController] Geocoding failed for full address: ${error.message}`);
     }
+
+    // Attempt 2: Fallback to a simpler query with just city and country
+    console.log('[VehicleController] Full address failed. Attempting fallback with city and country...');
+    query = `${location.city}, ${location.country}`;
+    try {
+        const response = await axios.get('https://nominatim.openstreetmap.org/search', {
+            params: { q: query, format: 'json', limit: 1 },
+            headers: { 'User-Agent': 'Car-Rental-App/1.0' }
+        });
+        if (response.data && response.data.length > 0) {
+            console.log('[VehicleController] Geocoding successful with city and country fallback.');
+            return { lat: parseFloat(response.data[0].lat), lon: parseFloat(response.data[0].lon) };
+        }
+    } catch (error) {
+        console.warn(`[VehicleController] Geocoding failed for fallback query: ${error.message}`);
+    }
+
+    // Final failure
+    console.error('[VehicleController] Geocoding failed for all attempts.');
+    return null;
 };
 
 /**
@@ -148,99 +160,49 @@ const getVehicleById = async (req, res) => {
  */
 const addVehicle = async (req, res) => {
     try {
+        // Destructure the nested fields correctly from the request body
         const {
-            make, model, year, licensePlate, rentalPricePerDay, description, location, seatingCapacity, availability,
-            crImageUrl, orImageUrl, userProfileImageUrl, driversLicenseImageUrl, exteriorPhotoUrl, interiorPhotoUrl,
-            safetyChecklist, safetyNotes, photos, // FIX: Added the 'photos' array from the frontend payload
-            // FIX: Added other fields sent from the frontend
-            driversLicenseNumber,
-            mobileNumber,
-            qrCodeUrl,
+            make, model, year, seatingCapacity, availability, location, pricing, safety, photos,
+            cor, or, driversLicense, payoutDetails
         } = req.body;
+        
         const ownerId = req.customUser.uid;
 
-        // FIX: The backend will now check for all the required fields.
-        if (!make || !model || !year || !licensePlate || !rentalPricePerDay || !ownerId || !location || !photos || photos.length === 0) {
+        // The backend will now check for all the required fields using the correct names.
+        if (!make || !model || !year || !cor?.plateNumber || !pricing?.manualPrice || !ownerId || !location || !photos || photos.length === 0) {
             console.error('[VehicleController] Missing required fields for adding a vehicle.');
             return res.status(400).json({ message: 'Missing required vehicle fields. Please fill out all steps and upload at least one photo.' });
         }
 
+        // Pass the entire location object to the updated geocodeLocation function
         const coordinates = await geocodeLocation(location);
         if (!coordinates) {
             console.error('[VehicleController] Invalid location provided.');
             return res.status(400).json({ message: 'Could not find a valid location for the provided address.' });
         }
-
-        // FIX: Combine all image uploads into a single array for processing
-        const allImagesToUpload = [
-            { field: 'crImageUrl', url: crImageUrl, folder: 'documents' },
-            { field: 'orImageUrl', url: orImageUrl, folder: 'documents' },
-            { field: 'userProfileImageUrl', url: userProfileImageUrl, folder: 'user_profiles' },
-            { field: 'driversLicenseImageUrl', url: driversLicenseImageUrl, folder: 'documents' },
-            ...photos.map((url, index) => ({
-                field: `photo_${index}`,
-                url,
-                folder: 'vehicle_photos'
-            }))
-        ];
-
-        const uploadedImageUrls = {};
-        const uploadedPhotoUrls = [];
-
-        for (const image of allImagesToUpload) {
-            if (image.url && image.url.startsWith('data:image/')) {
-                const publicUrl = await uploadBase64Image(image.url, image.folder);
-                if (image.field.startsWith('photo_')) {
-                    uploadedPhotoUrls.push(publicUrl);
-                } else {
-                    uploadedImageUrls[image.field] = publicUrl;
-                }
-            } else if (image.url) {
-                // If the URL is not a Base64 string, assume it's already a public URL
-                if (image.field.startsWith('photo_')) {
-                    uploadedPhotoUrls.push(image.url);
-                } else {
-                    uploadedImageUrls[image.field] = image.url;
-                }
-            }
-        }
         
         const newVehicle = {
+            ownerId,
             make,
             model,
             year: parseInt(year),
-            licensePlate,
-            rentalPricePerDay: parseFloat(rentalPricePerDay),
-            description: description || '',
-            ownerId,
+            seatingCapacity,
+            rentalPricePerDay: parseFloat(pricing?.manualPrice), // Pull from nested object
             location,
             latitude: coordinates.lat,
             longitude: coordinates.lon,
-            seatingCapacity,
             availability: availability || [],
-            safety: {
-                checklist: safetyChecklist,
-                notes: safetyNotes
-            },
-            // FIX: Store the new fields from the frontend
-            driversLicenseNumber,
-            mobileNumber,
-            qrCodeUrl,
-            // FIX: Use the new uploaded image URLs
-            crImageUrl: uploadedImageUrls.crImageUrl || '',
-            orImageUrl: uploadedImageUrls.orImageUrl || '',
-            userProfileImageUrl: uploadedImageUrls.userProfileImageUrl || '',
-            driversLicenseImageUrl: uploadedImageUrls.driversLicenseImageUrl || '',
-            // FIX: Use the new array of photo URLs
-            photos: uploadedPhotoUrls,
-            exteriorPhotoUrl: uploadedPhotoUrls[0] || '', // Set first photo as exterior
-            interiorPhotoUrl: uploadedPhotoUrls[1] || '', // Set second photo as interior
+            pricing, // Use the entire pricing object
+            safety, // Use the entire safety object
+            cor, // Use the entire COR object
+            or,  // Use the entire OR object
+            photos,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         };
 
         const docRef = await db.collection('vehicles').add(newVehicle);
-        console.log(`[VehicleController] Vehicle added with ID: ${docRef.id}`);
+        console.log('[VehicleController] Vehicle added with ID:', docRef.id);
         res.status(201).json({ id: docRef.id, ...newVehicle });
     } catch (error) {
         console.error('[VehicleController] Error adding vehicle:', error);
@@ -273,74 +235,21 @@ const updateVehicle = async (req, res) => {
         }
 
         if (updates.location) {
+            // Pass the entire location object to the updated geocodeLocation function
             const coordinates = await geocodeLocation(updates.location);
-            if (!coordinates) {
-                return res.status(400).json({ message: 'Could not find a valid location for the provided address.' });
-            }
-            updates.latitude = coordinates.lat;
-            updates.longitude = coordinates.lon;
-        }
-
-        // FIX: The update logic is now more robust. It handles Base64 image uploads and
-        // updates for all image fields, including the new 'photos' array.
-        const imageFields = ['userProfileImageUrl', 'crImageUrl', 'orImageUrl', 'driversLicenseImageUrl', 'exteriorPhotoUrl', 'interiorPhotoUrl'];
-        const updatedData = { ...updates };
-        const uploadedPhotoUrls = [];
-
-        // Handle the main photo fields
-        for (const field of imageFields) {
-            if (updatedData[field] && updatedData[field].startsWith('data:image/')) {
-                try {
-                    updatedData[field] = await uploadBase64Image(updatedData[field], 'vehicle_photos');
-                } catch (uploadError) {
-                    console.error(`[VehicleController] Failed to upload image for ${field}:`, uploadError);
-                    return res.status(500).json({ message: `Failed to upload image for ${field}.`, error: uploadError.message });
-                }
-            } else if (updatedData[field] === '') {
-                updatedData[field] = '';
+            if (coordinates) {
+                updates.latitude = coordinates.lat;
+                updates.longitude = coordinates.lon;
             }
         }
-
-        // Handle the new 'photos' array
-        if (updatedData.photos && Array.isArray(updatedData.photos)) {
-            for (const url of updatedData.photos) {
-                if (url && url.startsWith('data:image/')) {
-                    const publicUrl = await uploadBase64Image(url, 'vehicle_photos');
-                    uploadedPhotoUrls.push(publicUrl);
-                } else if (url) {
-                    uploadedPhotoUrls.push(url); // Keep existing public URLs
-                }
-            }
-            updatedData.photos = uploadedPhotoUrls;
-            // Update exterior/interior URLs based on the new photos array
-            updatedData.exteriorPhotoUrl = uploadedPhotoUrls[0] || '';
-            updatedData.interiorPhotoUrl = uploadedPhotoUrls[1] || '';
-        }
-
-
-        if (updatedData.year) updatedData.year = parseInt(updatedData.year);
-        if (updatedData.rentalPricePerDay) updatedData.rentalPricePerDay = parseFloat(updatedData.rentalPricePerDay);
-
-        if (updatedData.availability && Array.isArray(updatedData.availability)) {
-            updatedData.availability = updatedData.availability.map(range => ({
-                start: range.start ? new Date(range.start) : null,
-                end: range.end ? new Date(range.end) : null,
-            }));
-        }
-
-        // Ensure safety checklist and notes are correctly formatted
-        if (updatedData.safetyChecklist) {
-            updatedData.safety = {
-                checklist: updatedData.safetyChecklist,
-                notes: updatedData.safetyNotes
-            };
-            delete updatedData.safetyChecklist;
-            delete updatedData.safetyNotes;
-        }
-
-        updatedData.updatedAt = admin.firestore.FieldValue.serverTimestamp();
         
-        await vehicleRef.update(updatedData);
+        if (updates.year) updates.year = parseInt(updates.year);
+        if (updates.pricing?.manualPrice) updates.rentalPricePerDay = parseFloat(updates.pricing.manualPrice);
+
+        updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
+        
+        // The frontend now sends a clean payload. Just update the document with the new data.
+        await vehicleRef.update(updates);
         console.log(`[VehicleController] Vehicle ID ${id} updated successfully.`);
         res.status(200).json({ message: 'Vehicle updated successfully.', id });
     } catch (error) {
@@ -401,15 +310,24 @@ const getVehiclesByOwner = async (req, res) => {
 
         const vehicles = snapshot.docs.map(doc => {
             const data = doc.data();
+            
+            // This is the correct, robust way to handle the availability field
+            let parsedAvailability = [];
+            if (data.availability && Array.isArray(data.availability)) {
+                parsedAvailability = data.availability.map(range => ({
+                    start: range.start ? range.start.toDate().toISOString() : null,
+                    end: range.end ? range.end.toDate().toISOString() : null,
+                }));
+            } else {
+                console.warn(`[VehicleController] Vehicle ID ${doc.id} has malformed or missing availability data.`);
+            }
+
             return {
                 id: doc.id,
                 ...data,
                 createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null,
                 updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
-                availability: data.availability ? data.availability.map(range => ({
-                    start: range.start ? range.start.toDate().toISOString() : null,
-                    end: range.end ? range.end.toDate().toISOString() : null,
-                })) : [],
+                availability: parsedAvailability,
             };
         });
 

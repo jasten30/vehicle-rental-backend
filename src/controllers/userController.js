@@ -1,5 +1,6 @@
 // backend/src/controllers/userController.js
-const { db } = require('../utils/firebase'); // Removed 'admin' as it's not directly used in these functions
+const { db } = require('../utils/firebase');
+const admin = require('firebase-admin');
 
 // Helper for consistent logging
 const log = (message) => {
@@ -12,7 +13,7 @@ const log = (message) => {
  */
 const getUserProfile = async (req, res) => {
     try {
-        const userId = req.customUser.uid; // UID from authenticated user
+        const userId = req.customUser.uid;
         log(`Attempting to fetch profile for user ID: ${userId}`);
 
         const userDoc = await db.collection('users').doc(userId).get();
@@ -23,7 +24,6 @@ const getUserProfile = async (req, res) => {
         }
 
         const userData = userDoc.data();
-        // Filter out sensitive data like hashed passwords if they were ever stored here
         const profile = {
             uid: userDoc.id,
             email: userData.email,
@@ -31,13 +31,11 @@ const getUserProfile = async (req, res) => {
             lastName: userData.lastName || '',
             phoneNumber: userData.phoneNumber || '',
             address: userData.address || '',
-            role: userData.role || 'renter', // Default role
-            // Add other profile fields you want to expose
+            role: userData.role || 'renter',
         };
 
         log(`Successfully fetched profile for user ID: ${userId}`);
-        res.status(200).json(profile); // Directly return the profile object
-
+        res.status(200).json(profile);
     } catch (error) {
         console.error('Error fetching user profile:', error);
         res.status(500).json({ message: 'Server error fetching user profile.', error: error.message });
@@ -50,65 +48,118 @@ const getUserProfile = async (req, res) => {
  */
 const updateUserProfile = async (req, res) => {
     try {
-        const userId = req.customUser.uid; // UID from authenticated user
-        const updates = req.body; // Data to update
+        const userId = req.customUser.uid;
+        const updates = req.body;
 
         log(`Attempting to update profile for user ID: ${userId} with updates:`, updates);
 
         const userDocRef = db.collection('users').doc(userId);
-        const userDoc = await userDocRef.get();
-
-        if (!userDoc.exists) {
-            log(`User profile not found for ID: ${userId} during update attempt.`);
-            return res.status(404).json({ message: 'User profile not found.' });
-        }
-
-        // Define allowed fields to update to prevent malicious updates
+        
         const allowedUpdates = {};
         if (updates.firstName !== undefined) allowedUpdates.firstName = updates.firstName;
         if (updates.lastName !== undefined) allowedUpdates.lastName = updates.lastName;
         if (updates.phoneNumber !== undefined) allowedUpdates.phoneNumber = updates.phoneNumber;
         if (updates.address !== undefined) allowedUpdates.address = updates.address;
-        // Do NOT allow direct updates to email, password, or role via this endpoint
-        // Email/password changes should go through Firebase Authentication methods.
-
+        
+        if (updates.userProfileImageUrl !== undefined) allowedUpdates.userProfileImageUrl = updates.userProfileImageUrl;
+        if (updates.driversLicense !== undefined) allowedUpdates.driversLicense = updates.driversLicense;
+        if (updates.payoutDetails !== undefined) allowedUpdates.payoutDetails = updates.payoutDetails;
+        
         if (Object.keys(allowedUpdates).length === 0) {
             return res.status(400).json({ message: 'No valid fields provided for update.' });
         }
 
-        await userDocRef.update(allowedUpdates);
+        await userDocRef.set(allowedUpdates, { merge: true });
 
-        // Fetch the updated profile to return it
         const updatedDoc = await userDocRef.get();
         const updatedData = updatedDoc.data();
         const updatedProfile = {
             uid: updatedDoc.id,
-            email: updatedData.email, // Email won't change via this endpoint, but include for completeness
+            email: updatedData.email,
             firstName: updatedData.firstName || '',
             lastName: updatedData.lastName || '',
             phoneNumber: updatedData.phoneNumber || '',
             address: updatedData.address || '',
             role: updatedData.role || 'renter',
+            userProfileImageUrl: updatedData.userProfileImageUrl || '',
+            driversLicense: updatedData.driversLicense || {},
+            payoutDetails: updatedData.payoutDetails || {},
         };
 
         log(`Successfully updated profile for user ID: ${userId}`);
-        res.status(200).json({ message: 'Profile updated successfully.', user: updatedProfile }); // Return message AND updated user object
-
+        res.status(200).json({ message: 'Profile updated successfully.', user: updatedProfile });
     } catch (error) {
         console.error('Error updating user profile:', error);
         res.status(500).json({ message: 'Server error updating user profile.', error: error.message });
     }
 };
 
-// --- No need for requestOwnerRole, getOwnerRoleRequests, updateOwnerRoleRequest for this specific task (F3.5.1) ---
-// If these functions are part of your existing codebase and you need them,
-// you should re-add them here, but ensure they don't interfere with the profile update logic.
-// For the scope of F3.5.1, only getUserProfile and updateUserProfile are directly relevant.
+/**
+ * Gets a list of all users and their basic details.
+ * This is for the admin dashboard. Only accessible by admins.
+ */
+const getAllUsers = async (req, res) => {
+    try {
+        log('Attempting to fetch all user profiles for admin dashboard.');
+        
+        const usersSnapshot = await db.collection('users').get();
+        const users = [];
+        
+        // Use a Promise.all to fetch vehicle counts for each user concurrently
+        const userPromises = usersSnapshot.docs.map(async doc => {
+            const userData = doc.data();
+            // Fetch vehicle count for this user
+            const vehicleCountQuery = await db.collection('vehicles').where('ownerId', '==', doc.id).count().get();
+            const listingCount = vehicleCountQuery.data().count;
+
+            return {
+                uid: doc.id,
+                email: userData.email,
+                role: userData.role || 'renter',
+                listingCount: listingCount,
+            };
+        });
+        
+        const allUsers = await Promise.all(userPromises);
+        
+        log(`Successfully fetched ${allUsers.length} user profiles.`);
+        res.status(200).json(allUsers);
+    } catch (error) {
+        console.error('Error fetching all users:', error);
+        res.status(500).json({ message: 'Failed to fetch all users.', error: error.message });
+    }
+};
+
+/**
+ * Updates a user's role by an admin.
+ * Requires the admin role on the customUser object.
+ */
+const updateUserRoleByAdmin = async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const { role } = req.body;
+        
+        log(`Admin user ${req.customUser.uid} attempting to update role for ${userId} to ${role}.`);
+
+        if (!role || (role !== 'owner' && role !== 'renter')) {
+            return res.status(400).json({ message: 'Invalid role provided. Must be "owner" or "renter".' });
+        }
+
+        const userDocRef = db.collection('users').doc(userId);
+        await userDocRef.set({ role }, { merge: true });
+
+        log(`Successfully updated user ${userId} to role: ${role}.`);
+        res.status(200).json({ message: 'User role updated successfully.', userId, newRole: role });
+
+    } catch (error) {
+        console.error('Error updating user role by admin:', error);
+        res.status(500).json({ message: 'Failed to update user role.', error: error.message });
+    }
+};
 
 module.exports = {
     getUserProfile,
     updateUserProfile,
-    // If you have other user-related functions like requestOwnerRole, etc.,
-    // include them here if they are part of your existing application.
-    // For this specific task, we are focusing only on basic profile management.
+    getAllUsers, // New
+    updateUserRoleByAdmin, // New
 };

@@ -101,15 +101,24 @@ const getAllVehicles = async (req, res) => {
         const vehicles = [];
         snapshot.forEach(doc => {
             const data = doc.data();
+            
+            // This is the fixed, robust check for the availability field
+            let parsedAvailability = [];
+            if (data.availability && Array.isArray(data.availability)) {
+                parsedAvailability = data.availability.map(range => ({
+                    start: range.start ? range.start.toDate().toISOString() : null,
+                    end: range.end ? range.end.toDate().toISOString() : null,
+                }));
+            } else {
+                console.warn(`[VehicleController] Vehicle ID ${doc.id} has malformed or missing availability data. Setting to empty array.`);
+            }
+
             vehicles.push({
                 id: doc.id,
                 ...data,
                 createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null,
                 updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
-                availability: data.availability ? data.availability.map(range => ({
-                    start: range.start ? range.start.toDate().toISOString() : null,
-                    end: range.end ? range.end.toDate().toISOString() : null,
-                })) : [],
+                availability: parsedAvailability, // Use the new parsed variable
             });
         });
 
@@ -136,15 +145,22 @@ const getVehicleById = async (req, res) => {
         }
 
         const data = vehicleDoc.data();
+
+        // Apply the same robust check here for consistency
+        let parsedAvailability = [];
+        if (data.availability && Array.isArray(data.availability)) {
+            parsedAvailability = data.availability.map(range => ({
+                start: range.start ? range.start.toDate().toISOString() : null,
+                end: range.end ? range.end.toDate().toISOString() : null,
+            }));
+        }
+
         const vehicle = {
             id: vehicleDoc.id,
             ...data,
             createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null,
             updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
-            availability: data.availability ? data.availability.map(range => ({
-                start: range.start ? range.start.toDate().toISOString() : null,
-                end: range.end ? range.end.toDate().toISOString() : null,
-            })) : [],
+            availability: parsedAvailability,
         };
 
         console.log(`[VehicleController] Successfully fetched vehicle: ${id}`);

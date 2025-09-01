@@ -22,11 +22,15 @@ const verifyToken = async (req, res, next) => {
 
         if (!userDoc.exists) {
             console.log('[AuthMiddleware] User document not found. Creating a new one with default role "renter".');
-            await userDocRef.set({
+            const userDocData = {
                 role: 'renter',
-                email: decodedToken.email, // Add email for the admin dashboard
                 createdAt: admin.firestore.FieldValue.serverTimestamp()
-            }, { merge: true });
+            };
+            // Conditionally add the email field if it exists
+            if (decodedToken.email) {
+                userDocData.email = decodedToken.email;
+            }
+            await userDocRef.set(userDocData, { merge: true });
         }
 
         const updatedUserDoc = await userDocRef.get();

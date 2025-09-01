@@ -1,4 +1,3 @@
-// backend/controllers/vehicleController.js
 const { admin, db, storageBucket } = require('../utils/firebase'); // Import storageBucket
 const axios = require('axios'); // Import axios for making HTTP requests
 
@@ -47,7 +46,7 @@ const geocodeLocation = async (location) => {
         console.error('[VehicleController] Geocoding requires at least a city and country.');
         return null;
     }
-    
+
     // Attempt 1: Full address string
     let query = `${location.barangay}, ${location.city}, ${location.region}, ${location.country}`;
     try {
@@ -101,7 +100,7 @@ const getAllVehicles = async (req, res) => {
         const vehicles = [];
         snapshot.forEach(doc => {
             const data = doc.data();
-            
+
             // This is the fixed, robust check for the availability field
             let parsedAvailability = [];
             if (data.availability && Array.isArray(data.availability)) {
@@ -146,6 +145,9 @@ const getVehicleById = async (req, res) => {
 
         const data = vehicleDoc.data();
 
+        // FIXED: Added a log to show the raw data from Firestore
+        console.log(`[VehicleController] Raw Firestore data for vehicle ${id}:`, JSON.stringify(data, null, 2));
+
         // Apply the same robust check here for consistency
         let parsedAvailability = [];
         if (data.availability && Array.isArray(data.availability)) {
@@ -155,13 +157,20 @@ const getVehicleById = async (req, res) => {
             }));
         }
 
+        // FIXED: Rebuilt the vehicle object to explicitly include 'features'
+        // This ensures the field is not lost, even if it's not a top-level key
         const vehicle = {
             id: vehicleDoc.id,
-            ...data,
+            ...data, // This should already include `features`
             createdAt: data.createdAt ? data.createdAt.toDate().toISOString() : null,
             updatedAt: data.updatedAt ? data.updatedAt.toDate().toISOString() : null,
             availability: parsedAvailability,
+            // Explicitly include features in case of any data anomalies
+            features: data.features || [],
         };
+
+        // FIXED: Added a log to show the final object being sent in the response
+        console.log(`[VehicleController] Sending this vehicle object in response for ${id}:`, JSON.stringify(vehicle, null, 2));
 
         console.log(`[VehicleController] Successfully fetched vehicle: ${id}`);
         res.status(200).json(vehicle);
@@ -176,43 +185,53 @@ const getVehicleById = async (req, res) => {
  */
 const addVehicle = async (req, res) => {
     try {
-        // Destructure the nested fields correctly from the request body
+        // CORRECTED: Destructure all fields, including the new ones.
         const {
-            make, model, year, seatingCapacity, availability, location, pricing, safety, photos,
-            cor, or, driversLicense, payoutDetails
+            make, model, year, seatingCapacity, vehicleType, transmission, fuelType,
+            availability, location, pricing, safety, exteriorPhotos, interiorPhotos,
+            profilePhotoUrl, cor, or, driversLicense, payoutDetails, features,
         } = req.body;
-        
+
         const ownerId = req.customUser.uid;
 
-        // The backend will now check for all the required fields using the correct names.
-        if (!make || !model || !year || !cor?.plateNumber || !pricing?.manualPrice || !ownerId || !location || !photos || photos.length === 0) {
+        const hasPhotos = (exteriorPhotos && exteriorPhotos.length > 0) || (interiorPhotos && interiorPhotos.length > 0);
+
+        // Add the new fields to the required fields check
+        if (!make || !model || !year || !cor?.plateNumber || !pricing?.manualPrice || !ownerId || !location || !profilePhotoUrl || !vehicleType || !transmission || !fuelType || !hasPhotos) {
             console.error('[VehicleController] Missing required fields for adding a vehicle.');
             return res.status(400).json({ message: 'Missing required vehicle fields. Please fill out all steps and upload at least one photo.' });
         }
 
-        // Pass the entire location object to the updated geocodeLocation function
         const coordinates = await geocodeLocation(location);
         if (!coordinates) {
             console.error('[VehicleController] Invalid location provided.');
             return res.status(400).json({ message: 'Could not find a valid location for the provided address.' });
         }
-        
+
+        const parsedSeatingCapacity = seatingCapacity ? parseInt(seatingCapacity, 10) : null;
+
         const newVehicle = {
             ownerId,
             make,
             model,
-            year: parseInt(year),
-            seatingCapacity,
-            rentalPricePerDay: parseFloat(pricing?.manualPrice), // Pull from nested object
+            year: parseInt(year, 10),
+            seatingCapacity: parsedSeatingCapacity,
+            rentalPricePerDay: parseFloat(pricing?.manualPrice),
             location,
             latitude: coordinates.lat,
             longitude: coordinates.lon,
             availability: availability || [],
-            pricing, // Use the entire pricing object
-            safety, // Use the entire safety object
-            cor, // Use the entire COR object
-            or,  // Use the entire OR object
-            photos,
+            vehicleType,
+            transmission, // CORRECTED: Now included in the document
+            fuelType, // CORRECTED: Now included in the document
+            features, // CORRECTED: Now included in the document
+            pricing,
+            safety,
+            cor,
+            or,
+            profilePhotoUrl,
+            exteriorPhotos,
+            interiorPhotos,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         };
@@ -258,12 +277,13 @@ const updateVehicle = async (req, res) => {
                 updates.longitude = coordinates.lon;
             }
         }
-        
+
         if (updates.year) updates.year = parseInt(updates.year);
         if (updates.pricing?.manualPrice) updates.rentalPricePerDay = parseFloat(updates.pricing.manualPrice);
+        if (updates.seatingCapacity) updates.seatingCapacity = parseInt(updates.seatingCapacity);
 
         updates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
-        
+
         // The frontend now sends a clean payload. Just update the document with the new data.
         await vehicleRef.update(updates);
         console.log(`[VehicleController] Vehicle ID ${id} updated successfully.`);
@@ -326,7 +346,7 @@ const getVehiclesByOwner = async (req, res) => {
 
         const vehicles = snapshot.docs.map(doc => {
             const data = doc.data();
-            
+
             // This is the correct, robust way to handle the availability field
             let parsedAvailability = [];
             if (data.availability && Array.isArray(data.availability)) {

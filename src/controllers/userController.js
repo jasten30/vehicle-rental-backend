@@ -1,10 +1,45 @@
-// backend/src/controllers/userController.js
 const { db } = require('../utils/firebase');
 const admin = require('firebase-admin');
 
 // Helper for consistent logging
 const log = (message) => {
     console.log(`[UserController] ${message}`);
+};
+
+/**
+ * Creates a new user profile document in Firestore.
+ * This should be called immediately after a new user signs up.
+ * Accessible only by the user themselves.
+ */
+const createUserProfile = async (req, res) => {
+    try {
+        const userId = req.customUser.uid;
+        const email = req.customUser.email;
+
+        log(`Attempting to create a new profile for user ID: ${userId}`);
+
+        const userDocRef = db.collection('users').doc(userId);
+        const userDoc = await userDocRef.get();
+
+        if (userDoc.exists) {
+            log(`User profile for ID: ${userId} already exists.`);
+            return res.status(409).json({ message: 'User profile already exists.' });
+        }
+
+        const newUserProfile = {
+            email: email,
+            role: 'renter',
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        };
+
+        await userDocRef.set(newUserProfile);
+
+        log(`Successfully created profile for user ID: ${userId}`);
+        res.status(201).json({ message: 'User profile created successfully.', user: newUserProfile });
+    } catch (error) {
+        console.error('Error creating user profile:', error);
+        res.status(500).json({ message: 'Server error creating user profile.', error: error.message });
+    }
 };
 
 /**
@@ -32,6 +67,7 @@ const getUserProfile = async (req, res) => {
             phoneNumber: userData.phoneNumber || '',
             address: userData.address || '',
             role: userData.role || 'renter',
+            createdAt: userData.createdAt || null, // Include the createdAt field
         };
 
         log(`Successfully fetched profile for user ID: ${userId}`);
@@ -54,17 +90,17 @@ const updateUserProfile = async (req, res) => {
         log(`Attempting to update profile for user ID: ${userId} with updates:`, updates);
 
         const userDocRef = db.collection('users').doc(userId);
-        
+
         const allowedUpdates = {};
         if (updates.firstName !== undefined) allowedUpdates.firstName = updates.firstName;
         if (updates.lastName !== undefined) allowedUpdates.lastName = updates.lastName;
         if (updates.phoneNumber !== undefined) allowedUpdates.phoneNumber = updates.phoneNumber;
         if (updates.address !== undefined) allowedUpdates.address = updates.address;
-        
+
         if (updates.userProfileImageUrl !== undefined) allowedUpdates.userProfileImageUrl = updates.userProfileImageUrl;
         if (updates.driversLicense !== undefined) allowedUpdates.driversLicense = updates.driversLicense;
         if (updates.payoutDetails !== undefined) allowedUpdates.payoutDetails = updates.payoutDetails;
-        
+
         if (Object.keys(allowedUpdates).length === 0) {
             return res.status(400).json({ message: 'No valid fields provided for update.' });
         }
@@ -84,6 +120,7 @@ const updateUserProfile = async (req, res) => {
             userProfileImageUrl: updatedData.userProfileImageUrl || '',
             driversLicense: updatedData.driversLicense || {},
             payoutDetails: updatedData.payoutDetails || {},
+            createdAt: updatedData.createdAt || null, // Include the createdAt field
         };
 
         log(`Successfully updated profile for user ID: ${userId}`);
@@ -101,10 +138,10 @@ const updateUserProfile = async (req, res) => {
 const getAllUsers = async (req, res) => {
     try {
         log('Attempting to fetch all user profiles for admin dashboard.');
-        
+
         const usersSnapshot = await db.collection('users').get();
         const users = [];
-        
+
         // Use a Promise.all to fetch vehicle counts for each user concurrently
         const userPromises = usersSnapshot.docs.map(async doc => {
             const userData = doc.data();
@@ -119,9 +156,9 @@ const getAllUsers = async (req, res) => {
                 listingCount: listingCount,
             };
         });
-        
+
         const allUsers = await Promise.all(userPromises);
-        
+
         log(`Successfully fetched ${allUsers.length} user profiles.`);
         res.status(200).json(allUsers);
     } catch (error) {
@@ -138,7 +175,7 @@ const updateUserRoleByAdmin = async (req, res) => {
     try {
         const { userId } = req.params;
         const { role } = req.body;
-        
+
         log(`Admin user ${req.customUser.uid} attempting to update role for ${userId} to ${role}.`);
 
         if (!role || (role !== 'owner' && role !== 'renter')) {
@@ -158,6 +195,7 @@ const updateUserRoleByAdmin = async (req, res) => {
 };
 
 module.exports = {
+    createUserProfile,
     getUserProfile,
     updateUserProfile,
     getAllUsers, // New

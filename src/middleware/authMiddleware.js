@@ -24,7 +24,7 @@ const verifyToken = async (req, res, next) => {
             console.log('[AuthMiddleware] User document not found. Creating a new one with default role "renter".');
             await userDocRef.set({
                 role: 'renter',
-                email: decodedToken.email, // Add email for the admin dashboard
+                email: decodedToken.email || null,
                 createdAt: admin.firestore.FieldValue.serverTimestamp()
             }, { merge: true });
         }

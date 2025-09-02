@@ -24,7 +24,7 @@ router.get('/availability/:vehicleId', authMiddleware.verifyToken, bookingContro
 router.get('/:bookingId', authMiddleware.verifyToken, bookingController.getBookingById);
 
 // Route to create a new booking
-router.post('/', authMiddleware.verifyToken, authMiddleware.authorizeRole(['renter']), bookingController.createBooking);
+router.post('/', authMiddleware.verifyToken, authMiddleware.authorizeRole(['renter', 'owner']), bookingController.createBooking);
 
 // Route to update a booking's payment method (renter only)
 router.put('/:bookingId/payment-method', authMiddleware.verifyToken, authMiddleware.authorizeRole(['renter']), bookingController.updateBookingPaymentMethod);

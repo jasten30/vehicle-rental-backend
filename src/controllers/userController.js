@@ -2,135 +2,132 @@ const { db } = require('../utils/firebase');
 const admin = require('firebase-admin');
 
 // Helper for consistent logging
-const log = (message) => {
-    console.log(`[UserController] ${message}`);
+const log = (message, data = '') => {
+  console.log(`[UserController] ${message}`, data);
 };
 
-/**
- * Creates a new user profile document in Firestore.
- * This should be called immediately after a new user signs up.
- * Accessible only by the user themselves.
- */
 const createUserProfile = async (req, res) => {
-    try {
-        const userId = req.customUser.uid;
-        const email = req.customUser.email;
-
-        log(`Attempting to create a new profile for user ID: ${userId}`);
-
-        const userDocRef = db.collection('users').doc(userId);
-        const userDoc = await userDocRef.get();
-
-        if (userDoc.exists) {
-            log(`User profile for ID: ${userId} already exists.`);
-            return res.status(409).json({ message: 'User profile already exists.' });
-        }
-
-        const newUserProfile = {
-            email: email,
-            role: 'renter',
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        };
-
-        await userDocRef.set(newUserProfile);
-
-        log(`Successfully created profile for user ID: ${userId}`);
-        res.status(201).json({ message: 'User profile created successfully.', user: newUserProfile });
-    } catch (error) {
-        console.error('Error creating user profile:', error);
-        res.status(500).json({ message: 'Server error creating user profile.', error: error.message });
+  try {
+    const userId = req.customUser.uid;
+    const email = req.customUser.email;
+    log(`Attempting to create a new profile for user ID: ${userId}`);
+    const userDocRef = db.collection('users').doc(userId);
+    const userDoc = await userDocRef.get();
+    if (userDoc.exists) {
+      log(`User profile for ID: ${userId} already exists.`);
+      return res.status(409).json({ message: 'User profile already exists.' });
     }
+    const newUserProfile = {
+      email: email,
+      role: 'renter',
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+    await userDocRef.set(newUserProfile);
+    log(`Successfully created profile for user ID: ${userId}`);
+    res
+      .status(201)
+      .json({ message: 'User profile created successfully.', user: newUserProfile });
+  } catch (error) {
+    console.error('Error creating user profile:', error);
+    res.status(500).json({
+      message: 'Server error creating user profile.',
+      error: error.message,
+    });
+  }
 };
 
-/**
- * Get user profile by UID.
- * Accessible only by the user themselves or an admin.
- */
 const getUserProfile = async (req, res) => {
-    try {
-        const userId = req.customUser.uid;
-        log(`Attempting to fetch profile for user ID: ${userId}`);
-
-        const userDoc = await db.collection('users').doc(userId).get();
-
-        if (!userDoc.exists) {
-            log(`User profile not found for ID: ${userId}`);
-            return res.status(404).json({ message: 'User profile not found.' });
-        }
-
-        const userData = userDoc.data();
-        const profile = {
-            uid: userDoc.id,
-            email: userData.email,
-            firstName: userData.firstName || '',
-            lastName: userData.lastName || '',
-            phoneNumber: userData.phoneNumber || '',
-            address: userData.address || '',
-            role: userData.role || 'renter',
-            createdAt: userData.createdAt || null, // Include the createdAt field
-        };
-
-        log(`Successfully fetched profile for user ID: ${userId}`);
-        res.status(200).json(profile);
-    } catch (error) {
-        console.error('Error fetching user profile:', error);
-        res.status(500).json({ message: 'Server error fetching user profile.', error: error.message });
+  try {
+    const userId = req.customUser.uid;
+    log(`Attempting to fetch profile for user ID: ${userId}`);
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) {
+      log(`User profile not found for ID: ${userId}`);
+      return res.status(404).json({ message: 'User profile not found.' });
     }
+    const userData = userDoc.data();
+    const profile = {
+      uid: userDoc.id,
+      email: userData.email,
+      firstName: userData.firstName || '',
+      lastName: userData.lastName || '',
+      phoneNumber: userData.phoneNumber || '',
+      address: userData.address || '',
+      role: userData.role || 'renter',
+      about: userData.about || '',
+      createdAt: userData.createdAt || null,
+    };
+    log(`Successfully fetched profile for user ID: ${userId}`);
+    res.status(200).json(profile);
+  } catch (error) {
+    console.error('Error fetching user profile:', error);
+    res.status(500).json({
+      message: 'Server error fetching user profile.',
+      error: error.message,
+    });
+  }
 };
 
-/**
- * Update user profile.
- * Accessible only by the user themselves.
- */
 const updateUserProfile = async (req, res) => {
-    try {
-        const userId = req.customUser.uid;
-        const updates = req.body;
+  try {
+    const userId = req.customUser.uid;
+    const updates = req.body;
 
-        log(`Attempting to update profile for user ID: ${userId} with updates:`, updates);
+    const userDocRef = db.collection('users').doc(userId);
+    const allowedUpdates = {};
+    if (updates.firstName !== undefined)
+      allowedUpdates.firstName = updates.firstName;
+    if (updates.lastName !== undefined)
+      allowedUpdates.lastName = updates.lastName;
+    if (updates.phoneNumber !== undefined)
+      allowedUpdates.phoneNumber = updates.phoneNumber;
+    if (updates.address !== undefined) allowedUpdates.address = updates.address;
+    if (updates.about !== undefined) allowedUpdates.about = updates.about;
+    if (updates.userProfileImageUrl !== undefined)
+      allowedUpdates.userProfileImageUrl = updates.userProfileImageUrl;
+    if (updates.driversLicense !== undefined)
+      allowedUpdates.driversLicense = updates.driversLicense;
+    if (updates.payoutDetails !== undefined)
+      allowedUpdates.payoutDetails = updates.payoutDetails;
 
-        const userDocRef = db.collection('users').doc(userId);
-
-        const allowedUpdates = {};
-        if (updates.firstName !== undefined) allowedUpdates.firstName = updates.firstName;
-        if (updates.lastName !== undefined) allowedUpdates.lastName = updates.lastName;
-        if (updates.phoneNumber !== undefined) allowedUpdates.phoneNumber = updates.phoneNumber;
-        if (updates.address !== undefined) allowedUpdates.address = updates.address;
-
-        if (updates.userProfileImageUrl !== undefined) allowedUpdates.userProfileImageUrl = updates.userProfileImageUrl;
-        if (updates.driversLicense !== undefined) allowedUpdates.driversLicense = updates.driversLicense;
-        if (updates.payoutDetails !== undefined) allowedUpdates.payoutDetails = updates.payoutDetails;
-
-        if (Object.keys(allowedUpdates).length === 0) {
-            return res.status(400).json({ message: 'No valid fields provided for update.' });
-        }
-
-        await userDocRef.set(allowedUpdates, { merge: true });
-
-        const updatedDoc = await userDocRef.get();
-        const updatedData = updatedDoc.data();
-        const updatedProfile = {
-            uid: updatedDoc.id,
-            email: updatedData.email,
-            firstName: updatedData.firstName || '',
-            lastName: updatedData.lastName || '',
-            phoneNumber: updatedData.phoneNumber || '',
-            address: updatedData.address || '',
-            role: updatedData.role || 'renter',
-            userProfileImageUrl: updatedData.userProfileImageUrl || '',
-            driversLicense: updatedData.driversLicense || {},
-            payoutDetails: updatedData.payoutDetails || {},
-            createdAt: updatedData.createdAt || null, // Include the createdAt field
-        };
-
-        log(`Successfully updated profile for user ID: ${userId}`);
-        res.status(200).json({ message: 'Profile updated successfully.', user: updatedProfile });
-    } catch (error) {
-        console.error('Error updating user profile:', error);
-        res.status(500).json({ message: 'Server error updating user profile.', error: error.message });
+    if (Object.keys(allowedUpdates).length === 0) {
+      return res
+        .status(400)
+        .json({ message: 'No valid fields provided for update.' });
     }
-};
 
+    await userDocRef.set(allowedUpdates, { merge: true });
+    const updatedDoc = await userDocRef.get();
+    const updatedData = updatedDoc.data();
+    const updatedProfile = {
+      uid: updatedDoc.id,
+      email: updatedData.email,
+      firstName: updatedData.firstName || '',
+      lastName: updatedData.lastName || '',
+      phoneNumber: updatedData.phoneNumber || '',
+      address: updatedData.address || '',
+      role: updatedData.role || 'renter',
+      userProfileImageUrl: updatedData.userProfileImageUrl || '',
+      driversLicense: updatedData.driversLicense || {},
+      payoutDetails: updatedData.payoutDetails || {},
+      createdAt: updatedData.createdAt || null,
+      about: updatedData.about || '',
+    };
+
+    log(`Successfully updated profile for user ID: ${userId}`);
+    res
+      .status(200)
+      .json({ message: 'Profile updated successfully.', user: updatedProfile });
+  } catch (error) {
+    console.error('Error updating user profile:', error);
+    res
+      .status(500)
+      .json({
+        message: 'Server error updating user profile.',
+        error: error.message,
+      });
+  }
+};
 /**
  * Gets a list of all users and their basic details.
  * This is for the admin dashboard. Only accessible by admins.

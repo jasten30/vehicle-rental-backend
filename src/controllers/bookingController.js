@@ -18,16 +18,29 @@ const convertToDate = (value) => {
 };
 
 /**
- * Get all bookings, enriched with vehicle and renter information.
- * This version is optimized to prevent N+1 query issues.
+ * Get all bookings, with flexible date filtering based on createdAt timestamp.
  */
 const getAllBookings = async (req, res) => {
   try {
+    const { startDate, endDate } = req.query;
     log('Fetching all bookings...');
-    const bookingsSnapshot = await db.collection('bookings').get();
+
+    let bookingsQuery = db.collection('bookings');
+
+    // Add filters step-by-step if they are provided
+    if (startDate) {
+      log(`Filtering for bookings created on or after: ${startDate}`);
+      bookingsQuery = bookingsQuery.where('createdAt', '>=', new Date(startDate));
+    }
+    if (endDate) {
+      log(`Filtering for bookings created on or before: ${endDate}`);
+      bookingsQuery = bookingsQuery.where('createdAt', '<=', new Date(endDate + 'T23:59:59'));
+    }
+
+    const bookingsSnapshot = await bookingsQuery.get();
 
     if (bookingsSnapshot.empty) {
-      log('No bookings found.');
+      log('No bookings found for the given criteria.');
       return res.status(200).json([]);
     }
 
@@ -70,17 +83,16 @@ const getAllBookings = async (req, res) => {
     const enrichedBookings = bookingsData.map((booking) => {
       const vehicle = vehiclesMap.get(booking.vehicleId);
       const renter = rentersMap.get(booking.renterId);
-      const startDate = convertToDate(booking.startDate);
-      const endDate = convertToDate(booking.endDate);
-      const createdAt = convertToDate(booking.createdAt);
+      const bookingStartDate = convertToDate(booking.startDate);
+      const bookingEndDate = convertToDate(booking.endDate);
+      const bookingCreatedAt = convertToDate(booking.createdAt);
 
       return {
         ...booking,
-        // FIXED: Changed doc.id to booking.id
         id: booking.id,
-        startDate: startDate ? startDate.toISOString() : null,
-        endDate: endDate ? endDate.toISOString() : null,
-        createdAt: createdAt ? createdAt.toISOString() : null,
+        startDate: bookingStartDate ? bookingStartDate.toISOString() : null,
+        endDate: bookingEndDate ? bookingEndDate.toISOString() : null,
+        createdAt: bookingCreatedAt ? bookingCreatedAt.toISOString() : null,
         vehicleName: vehicle
           ? `${vehicle.make} ${vehicle.model}`
           : 'Unknown Vehicle',
@@ -97,6 +109,7 @@ const getAllBookings = async (req, res) => {
       .json({ message: 'Server error fetching bookings.', error: error.message });
   }
 };
+
 
 /**
  * Creates a new booking.
@@ -162,8 +175,6 @@ const apiCheckAvailability = async (req, res) => {
     const { vehicleId } = req.params;
     const { startDate, endDate } = req.query;
 
-    log(`Checking availability for vehicle ${vehicleId} from ${startDate} to ${endDate}`);
-
     if (!vehicleId || !startDate || !endDate) {
       return res.status(400).json({
         message: 'Vehicle ID, start date, and end date are required.',
@@ -193,21 +204,13 @@ const apiCheckAvailability = async (req, res) => {
       const periodEnd = convertToDate(period.end);
 
       if (!periodStart || !periodEnd) {
-        console.warn(
-          `[BookingController] Skipping invalid pre-defined availability period for vehicle ${vehicleId}:`,
-          period
-        );
         continue;
       }
 
       if (requestedStart <= periodEnd && requestedEnd >= periodStart) {
-        log(
-          `Vehicle ${vehicleId} is unavailable due to pre-defined period: ${period.start} to ${period.end}`
-        );
         return res.status(200).json({
           isAvailable: false,
-          message: 'Vehicle is unavailable for the requested dates due to pre-defined blocks.',
-          overlappingPeriods: [period],
+          message: 'Vehicle is unavailable for the requested dates.',
         });
       }
     }
@@ -218,36 +221,20 @@ const apiCheckAvailability = async (req, res) => {
       .where('paymentStatus', '==', 'Confirmed');
 
     const snapshot = await bookingsRef.get();
-    const overlappingBookings = [];
-
+    let isOverlapping = false;
     snapshot.forEach((doc) => {
       const booking = doc.data();
       const bookingStart = convertToDate(booking.startDate);
       const bookingEnd = convertToDate(booking.endDate);
-
-      if (!bookingStart || !bookingEnd) {
-        console.warn(
-          `[BookingController] Skipping invalid booking date for booking ID ${doc.id}:`,
-          booking
-        );
-        return;
-      }
-
       if (requestedStart <= bookingEnd && requestedEnd >= bookingStart) {
-        overlappingBookings.push({
-          id: doc.id,
-          startDate: bookingStart.toISOString().split('T')[0],
-          endDate: bookingEnd.toISOString().split('T')[0],
-        });
+        isOverlapping = true;
       }
     });
 
-    if (overlappingBookings.length > 0) {
-      log(`Vehicle ${vehicleId} is unavailable due to existing bookings.`);
+    if (isOverlapping) {
       return res.status(200).json({
         isAvailable: false,
         message: 'Vehicle is already booked for some of the requested dates.',
-        overlappingBookings,
       });
     }
 
@@ -261,9 +248,6 @@ const apiCheckAvailability = async (req, res) => {
 
     const totalCost = parseFloat((rentalPricePerDay * diffDays).toFixed(2));
 
-    log(
-      `Vehicle ${vehicleId} is available. Calculated costs: Total=${totalCost}`
-    );
     res.status(200).json({
       isAvailable: true,
       message: 'Vehicle is available for the selected dates.',
@@ -592,6 +576,62 @@ const deleteBooking = async (req, res) => {
 };
 
 /**
+ * Confirms a booking's payment. Called by an owner or admin.
+ */
+const confirmBookingPayment = async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const approverId = req.customUser.uid;
+    const approverRole = req.customUser.role;
+
+    const bookingRef = db.collection('bookings').doc(bookingId);
+    const bookingDoc = await bookingRef.get();
+
+    if (!bookingDoc.exists) {
+      return res.status(404).json({ message: 'Booking not found.' });
+    }
+
+    // --- ADDED SECURITY CHECK ---
+    const bookingData = bookingDoc.data();
+    const vehicleDoc = await db
+      .collection('vehicles')
+      .doc(bookingData.vehicleId)
+      .get();
+
+    if (!vehicleDoc.exists) {
+      return res.status(404).json({ message: 'Associated vehicle not found.' });
+    }
+
+    const vehicleOwnerId = vehicleDoc.data().ownerId;
+
+    // Allow if the requester is an admin OR if they are the vehicle's actual owner
+    if (approverRole !== 'admin' && approverId !== vehicleOwnerId) {
+      log(
+        `SECURITY ALERT: User ${approverId} (role: ${approverRole}) attempted to confirm payment for a vehicle they do not own (owner: ${vehicleOwnerId}).`
+      );
+      return res.status(403).json({
+        message: 'You are not authorized to confirm payments for this vehicle.',
+      });
+    }
+    // --- END SECURITY CHECK ---
+
+    await bookingRef.update({
+      paymentStatus: 'confirmed',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    log(`Booking ${bookingId} payment confirmed by ${approverId}`);
+    res.status(200).json({ message: 'Booking payment confirmed successfully.' });
+  } catch (error) {
+    console.error(
+      `Error confirming booking payment for ${req.params.bookingId}:`,
+      error
+    );
+    res.status(500).json({ message: 'Error confirming booking payment.' });
+  }
+};
+
+/**
  * Get all bookings for vehicles owned by the authenticated user.
  */
 const getOwnerBookings = async (req, res) => {
@@ -619,7 +659,6 @@ const getOwnerBookings = async (req, res) => {
 
     const bookings = [];
     for (const doc of bookingsSnapshot.docs) {
-      // ... logic to enrich bookings ...
       bookings.push({ id: doc.id, ...doc.data() });
     }
 
@@ -642,5 +681,6 @@ module.exports = {
   updateBookingPaymentMethod,
   updateBookingStatus,
   deleteBooking,
+  confirmBookingPayment,
   getOwnerBookings,
 };

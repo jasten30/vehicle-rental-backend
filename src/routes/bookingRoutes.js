@@ -76,6 +76,14 @@ router.put(
   bookingController.updateBookingStatus
 );
 
+//Route for an owner/admin to confirm a payment
+router.put(
+  '/:bookingId/confirm-payment',
+  authMiddleware.verifyToken,
+  authMiddleware.authorizeRole(['owner', 'admin']),
+  bookingController.confirmBookingPayment
+);
+
 // Route to delete a booking
 router.delete(
   '/:bookingId',

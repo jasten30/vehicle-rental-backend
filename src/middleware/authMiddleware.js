@@ -1,82 +1,80 @@
-// backend/src/middleware/authMiddleware.js
 const admin = require('firebase-admin');
 
 const verifyToken = async (req, res, next) => {
-    const authHeader = req.headers.authorization;
-    console.log('[AuthMiddleware] Received Authorization Header:', authHeader ? authHeader.substring(0, 30) + '...' : 'None');
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(403).json({ message: 'No token provided or malformed token.' });
+  }
 
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        console.log('[AuthMiddleware] No Bearer token found or malformed header. Denying access.');
-        return res.status(403).json({ message: 'No token provided or malformed token.' });
+  const idToken = authHeader.split('Bearer ')[1];
+
+  try {
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    const userDocRef = admin.firestore().collection('users').doc(decodedToken.uid);
+    let userDoc = await userDocRef.get();
+
+    // If the user's profile doesn't exist in Firestore, create it.
+    if (!userDoc.exists) {
+      console.log('[AuthMiddleware] User document not found. Creating a new one...');
+      
+      const { email, phone_number } = decodedToken; // Get both fields
+      
+      const newUserProfile = {
+        role: 'renter',
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        emailVerified: decodedToken.email_verified || false,
+      };
+
+      // Only add email or phoneNumber if they exist in the token
+      if (email) {
+        newUserProfile.email = email;
+      }
+      if (phone_number) {
+        newUserProfile.phoneNumber = phone_number;
+      }
+
+      // This is a critical safety check
+      if (!email && !phone_number) {
+        throw new Error('User token is missing both email and phone number.');
+      }
+      
+      await userDocRef.set(newUserProfile);
+      userDoc = await userDocRef.get(); // Re-fetch the newly created document
     }
 
-    const idToken = authHeader.split('Bearer ')[1];
-
-    try {
-        const decodedToken = await admin.auth().verifyIdToken(idToken);
-        console.log('[AuthMiddleware] Token successfully verified. UID:', decodedToken.uid);
-        console.log('[AuthMiddleware] Decoded Token Claims:', decodedToken);
-
-        const userDocRef = admin.firestore().collection('users').doc(decodedToken.uid);
-        const userDoc = await userDocRef.get();
-
-        if (!userDoc.exists) {
-            console.log('[AuthMiddleware] User document not found. Creating a new one with default role "renter".');
-            const userDocData = {
-                role: 'renter',
-                email: decodedToken.email, // Add email for the admin dashboard
-                createdAt: admin.firestore.FieldValue.serverTimestamp()
-            };
-            // Conditionally add the email field if it exists
-            if (decodedToken.email) {
-                userDocData.email = decodedToken.email;
-            }
-            await userDocRef.set(userDocData, { merge: true });
-        }
-
-        const updatedUserDoc = await userDocRef.get();
-        req.customUser = {
-            uid: decodedToken.uid,
-            email: updatedUserDoc.data().email || decodedToken.email,
-            role: updatedUserDoc.data().role || 'renter',
-        };
-
-        console.log(`[AuthMiddleware] User role from Firestore: ${req.customUser.role}`);
-
-        next();
-    } catch (error) {
-        console.error('[AuthMiddleware] !!! DETAILED TOKEN VERIFICATION ERROR !!!');
-        console.error('[AuthMiddleware] Error Code:', error.code);
-        console.error('[AuthMiddleware] Error Message:', error.message);
-        console.error('[AuthMiddleware] Full Error Object:', error);
-
-        if (error.code === 'auth/id-token-expired') {
-            return res.status(401).json({ message: 'Session expired. Please log in again.' });
-        } else if (error.code === 'auth/argument-error' || error.code === 'auth/invalid-id-token') {
-            return res.status(401).json({ message: 'Invalid token.' });
-        }
-        return res.status(500).json({ message: 'Failed to authenticate token.', error: error.message });
+    const userData = userDoc.data();
+    req.customUser = {
+      uid: decodedToken.uid,
+      email: userData.email || decodedToken.email,
+      role: userData.role || 'renter',
+      phone_number: userData.phoneNumber || decodedToken.phone_number,
+    };
+    
+    console.log(`[AuthMiddleware] User authenticated: ${req.customUser.uid}, Role: ${req.customUser.role}`);
+    next();
+  } catch (error) {
+    console.error('[AuthMiddleware] Token verification failed:', error.message);
+    if (error.code === 'auth/id-token-expired') {
+      return res.status(401).json({ message: 'Session expired. Please log in again.' });
     }
+    return res.status(500).json({ message: 'Failed to authenticate token.', error: error.message });
+  }
 };
 
 const authorizeRole = (roles) => {
-    return (req, res, next) => {
-        if (!req.customUser || !req.customUser.role) {
-            console.log('[AuthMiddleware] Authorization failed: User not authenticated or role missing.');
-            return res.status(403).json({ message: 'Access denied. User role not found.' });
-        }
-
-        if (roles.includes(req.customUser.role)) {
-            console.log(`[AuthMiddleware] User role '${req.customUser.role}' authorized for route.`);
-            next();
-        } else {
-            console.log(`[AuthMiddleware] Authorization failed: User role '${req.customUser.role}' not in allowed roles: ${roles.join(', ')}`);
-            return res.status(403).json({ message: 'Access denied. Insufficient permissions.' });
-        }
-    };
+  return (req, res, next) => {
+    if (!req.customUser || !req.customUser.role) {
+      return res.status(403).json({ message: 'Access denied. User role not found.' });
+    }
+    if (roles.includes(req.customUser.role)) {
+      next();
+    } else {
+      return res.status(403).json({ message: 'Access denied. Insufficient permissions.' });
+    }
+  };
 };
 
 module.exports = {
-    verifyToken,
-    authorizeRole,
+  verifyToken,
+  authorizeRole,
 };

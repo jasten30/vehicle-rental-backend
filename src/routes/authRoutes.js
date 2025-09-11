@@ -4,11 +4,15 @@ const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/authController');
 const { protect } = require('../middleware/authMiddleware');
+const authMiddleware = require('../middleware/authMiddleware');
 
 // POST /api/auth/register - User registration
 router.post('/register', authController.register);
 
-// --- NEW: POST /api/auth/login - User login ---
+// POST /api/auth/login - User login ---
 router.post('/login', authController.login);
+
+// Route for token-based login (used for phone auth)
+router.post('/token-login', authMiddleware.verifyToken, authController.tokenLogin);
 
 module.exports = router;

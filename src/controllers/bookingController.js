@@ -454,67 +454,53 @@ const updateBookingPaymentMethod = async (req, res) => {
 const getBookingById = async (req, res) => {
   try {
     const { bookingId } = req.params;
-    log(`Fetching booking with ID: ${bookingId}`);
     const bookingDoc = await db.collection('bookings').doc(bookingId).get();
 
     if (!bookingDoc.exists) {
-      log(`Booking with ID ${bookingId} not found.`);
       return res.status(404).json({ message: 'Booking not found.' });
     }
 
     const bookingData = bookingDoc.data();
+
+    // Fetch Vehicle Data
+    const vehicleDoc = await db.collection('vehicles').doc(bookingData.vehicleId).get();
+    const vehicleData = vehicleDoc.exists ? vehicleDoc.data() : null;
+
+    // Fetch Renter Data
+    const renterDoc = await db.collection('users').doc(bookingData.renterId).get();
+    const renterData = renterDoc.exists ? renterDoc.data() : null;
+
+    // Fetch Owner Data
+    let ownerData = null;
+    if (vehicleData && vehicleData.ownerId) {
+      const ownerDoc = await db.collection('users').doc(vehicleData.ownerId).get();
+      ownerData = ownerDoc.exists ? ownerDoc.data() : null;
+    }
+    
+    // Authorization Check (can now be simpler)
     const requesterId = req.customUser.uid;
     const requesterRole = req.customUser.role;
-
-    const vehicleDoc = await db
-      .collection('vehicles')
-      .doc(bookingData.vehicleId)
-      .get();
-    const vehicleData = vehicleDoc.exists ? vehicleDoc.data() : null;
-    const ownerId = vehicleData ? vehicleData.ownerId : null;
-
-    if (
-      bookingData.renterId !== requesterId &&
-      ownerId !== requesterId &&
-      requesterRole !== 'admin'
-    ) {
-      log(
-        `Unauthorized attempt to access booking ${bookingId} by user ${requesterId}. Booking belongs to renter ${bookingData.renterId} and vehicle owner ${ownerId}.`
-      );
-      return res
-        .status(403)
-        .json({ message: 'Unauthorized access to booking details.' });
+    if (requesterRole !== 'admin' && requesterId !== bookingData.renterId && requesterId !== vehicleData.ownerId) {
+        return res.status(403).json({ message: 'Unauthorized access to booking details.' });
     }
 
     const startDate = convertToDate(bookingData.startDate);
     const endDate = convertToDate(bookingData.endDate);
     const createdAt = convertToDate(bookingData.createdAt);
 
-    log(`Successfully fetched booking: ${bookingId}`);
     res.status(200).json({
       id: bookingDoc.id,
       ...bookingData,
       startDate: startDate ? startDate.toISOString() : null,
       endDate: endDate ? endDate.toISOString() : null,
       createdAt: createdAt ? createdAt.toISOString() : null,
-      vehicleDetails: vehicleData
-        ? {
-            id: vehicleDoc.id,
-            make: vehicleData.make,
-            model: vehicleData.model,
-            year: vehicleData.year,
-            rentalPricePerDay: vehicleData.rentalPricePerDay,
-            imageUrl: vehicleData.imageUrl,
-            location: vehicleData.location,
-            ownerId: vehicleData.ownerId,
-          }
-        : null,
+      vehicleDetails: vehicleData,
+      renterDetails: renterData ? { name: `${renterData.firstName} ${renterData.lastName}`, email: renterData.email } : null,
+      ownerDetails: ownerData ? { name: `${ownerData.firstName} ${ownerData.lastName}`, email: ownerData.email } : null,
     });
   } catch (error) {
     console.error(`Error fetching booking by ID ${req.params.bookingId}:`, error);
-    res
-      .status(500)
-      .json({ message: 'Error fetching booking.', error: error.message });
+    res.status(500).json({ message: 'Error fetching booking.', error: error.message });
   }
 };
 

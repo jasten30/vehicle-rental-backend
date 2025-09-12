@@ -17,8 +17,6 @@ const register = async (req, res) => {
         .json({ message: 'All fields are required.' });
     }
 
-    log(`Attempting to register user: ${email} with default role: ${defaultRole}`);
-
     const userRecord = await admin.auth().createUser({
       email: email,
       password: password,
@@ -28,11 +26,8 @@ const register = async (req, res) => {
     });
 
     await admin.auth().setCustomUserClaims(userRecord.uid, { role: defaultRole });
-    log(`Custom claim { role: '${defaultRole}' } set for user: ${userRecord.uid}`);
 
-    const hashedPassword = await hashPassword(password);
     const userDocRef = admin.firestore().collection('users').doc(userRecord.uid);
-
     await userDocRef.set({
       uid: userRecord.uid,
       email: userRecord.email,
@@ -41,20 +36,15 @@ const register = async (req, res) => {
       lastName: lastName,
       name: `${firstName} ${lastName}`,
       role: defaultRole,
-      passwordHash: hashedPassword,
+      passwordHash: await hashPassword(password),
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       emailVerified: false,
-      isMobileVerified: false,
+      // UPDATED: Set to true on registration to match Firebase Auth's state
+      isMobileVerified: true,
     });
-
-    // We can optionally send the first verification email right away
-    // const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
-    // await sendVerificationEmail(email, verificationCode);
     
     const customToken = await admin.auth().createCustomToken(userRecord.uid);
 
-    log(`User registered successfully: ${userRecord.uid} (${email})`);
     res.status(201).json({
       message: 'User registered successfully!',
       token: customToken,
@@ -66,6 +56,8 @@ const register = async (req, res) => {
       errorMessage = 'The email address is already in use by another account.';
     } else if (error.code === 'auth/invalid-phone-number') {
       errorMessage = 'The phone number is not a valid format.';
+    } else if (error.code === 'auth/phone-number-already-exists') {
+      errorMessage = 'The phone number is already in use by another account.';
     }
     res.status(500).json({ message: errorMessage, error: error.message });
   }
@@ -132,13 +124,9 @@ const login = async (req, res) => {
   }
 };
 
-/**
- * Handles login via a Firebase ID token (e.g., from a phone auth).
- * It finds the user's role and issues a custom token.
- */
 const tokenLogin = async (req, res) => {
   try {
-    const { uid } = req.customUser; // This comes from your verifyToken middleware
+    const { uid } = req.customUser;
     log(`Token login attempt for UID: ${uid}`);
 
     const userDoc = await admin.firestore().collection('users').doc(uid).get();
@@ -160,8 +148,32 @@ const tokenLogin = async (req, res) => {
   }
 };
 
+const reauthenticateWithPassword = async (req, res) => {
+  try {
+    const { password } = req.body;
+    const { uid } = req.customUser;
+    
+    const userDoc = await admin.firestore().collection('users').doc(uid).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ message: 'User data not found.' });
+    }
+
+    const passwordMatch = await comparePasswords(password, userDoc.data().passwordHash);
+    
+    if (!passwordMatch) {
+      return res.status(401).json({ message: 'Incorrect password.' });
+    }
+    
+    res.status(200).json({ message: 'Re-authentication successful.' });
+  } catch (error) {
+    console.error('Error during re-authentication:', error);
+    res.status(500).json({ message: 'Server error during re-authentication.' });
+  }
+};
+
 module.exports = {
   register,
   login,
   tokenLogin,
+  reauthenticateWithPassword,
 };

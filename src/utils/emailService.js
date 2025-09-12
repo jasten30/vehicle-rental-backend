@@ -5,8 +5,8 @@ const nodemailer = require('nodemailer');
 const transporter = nodemailer.createTransport({
   service: 'gmail', // Or another service like 'SendGrid'
   auth: {
-    user: 'your-email@gmail.com', // Your email address
-    pass: 'your-app-password',   // Your email's "App Password" (not your regular password)
+    user: 'rentcycleplatform@gmail.com', // Your email address
+    pass: 'wonu xqaa eyry ysxo',   // Your email's "App Password" (not your regular password)
   },
 });
 
@@ -17,7 +17,7 @@ const transporter = nodemailer.createTransport({
  */
 const sendVerificationEmail = async (userEmail, verificationCode) => {
   const mailOptions = {
-    from: '"RentCycle" <your-email@gmail.com>',
+    from: '"RentCycle" <rentcycleplatform@gmail.com>',
     to: userEmail,
     subject: 'Your RentCycle Verification Code',
     html: `

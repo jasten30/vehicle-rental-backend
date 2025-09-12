@@ -15,4 +15,6 @@ router.post('/login', authController.login);
 // Route for token-based login (used for phone auth)
 router.post('/token-login', authMiddleware.verifyToken, authController.tokenLogin);
 
+router.post('/reauthenticate', authMiddleware.verifyToken, authController.reauthenticateWithPassword);
+
 module.exports = router;

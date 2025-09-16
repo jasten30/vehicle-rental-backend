@@ -92,4 +92,8 @@ router.delete(
   bookingController.deleteBooking
 );
 
+// Routes for owner to approve or decline a booking
+router.put('/:bookingId/approve', authMiddleware.verifyToken, authMiddleware.authorizeRole(['owner', 'admin']), bookingController.approveBooking);
+router.put('/:bookingId/decline', authMiddleware.verifyToken, authMiddleware.authorizeRole(['owner', 'admin']), bookingController.declineBooking);
+
 module.exports = router;

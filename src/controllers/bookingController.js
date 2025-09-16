@@ -116,17 +116,11 @@ const getAllBookings = async (req, res) => {
  */
 const createBooking = async (req, res) => {
   try {
-    const {
-      vehicleId,
-      startDate,
-      endDate,
-      totalCost,
-      paymentStatus,
-      paymentDetails,
-    } = req.body;
+    // UPDATED: We only need vehicleId, dates, and totalCost
+    const { vehicleId, startDate, endDate, totalCost } = req.body;
     const renterId = req.customUser.uid;
 
-    if (!vehicleId || !startDate || !endDate || !totalCost || !paymentStatus) {
+    if (!vehicleId || !startDate || !endDate || !totalCost) {
       return res.status(400).json({ message: 'Missing required booking fields.' });
     }
 
@@ -141,29 +135,30 @@ const createBooking = async (req, res) => {
     if (!vehicleDoc.exists) {
       return res.status(404).json({ message: 'Vehicle not found.' });
     }
+    
+    // Get the ownerId from the vehicle document
+    const ownerId = vehicleDoc.data().ownerId;
 
     const newBooking = {
       vehicleId,
       renterId,
+      ownerId, // Store the owner's ID for easy lookup
       startDate: admin.firestore.Timestamp.fromDate(start),
       endDate: admin.firestore.Timestamp.fromDate(end),
       totalCost: parseFloat(totalCost),
-      paymentStatus,
-      paymentDetails: paymentDetails || {},
+      // UPDATED: The initial status is now 'pending_owner_approval'
+      paymentStatus: 'pending_owner_approval', 
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
     const docRef = await db.collection('bookings').add(newBooking);
-    log(
-      `Booking created with ID: ${docRef.id} for vehicle ${vehicleId} by renter ${renterId}. Status: ${paymentStatus}`
-    );
+    log(`Booking request created with ID: ${docRef.id}`);
     res.status(201).json({ id: docRef.id, ...newBooking });
+
   } catch (error) {
     console.error('[BookingController] Error creating booking:', error);
-    res
-      .status(500)
-      .json({ message: 'Error creating booking.', error: error.message });
+    res.status(500).json({ message: 'Error creating booking request.' });
   }
 };
 
@@ -618,43 +613,133 @@ const confirmBookingPayment = async (req, res) => {
 };
 
 /**
+ * Approves a booking request. Called by an owner or admin.
+ */
+const approveBooking = async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const approverId = req.customUser.uid;
+
+    const bookingRef = db.collection('bookings').doc(bookingId);
+    const bookingDoc = await bookingRef.get();
+
+    if (!bookingDoc.exists) {
+      return res.status(404).json({ message: 'Booking not found.' });
+    }
+    
+    // Add security check to ensure the approver is the vehicle owner or an admin
+    const bookingData = bookingDoc.data();
+    if (req.customUser.role !== 'admin' && approverId !== bookingData.ownerId) {
+        return res.status(403).json({ message: 'You are not authorized to approve this booking.' });
+    }
+
+    await bookingRef.update({
+      paymentStatus: 'confirmed', // Or another status like 'awaiting_payment'
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    res.status(200).json({ message: 'Booking request approved.' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error approving booking request.' });
+  }
+};
+
+/**
+ * Declines a booking request. Called by an owner or admin.
+ */
+const declineBooking = async (req, res) => {
+  try {
+    const { bookingId } = req.params;
+    const declinerId = req.customUser.uid;
+
+    const bookingRef = db.collection('bookings').doc(bookingId);
+    const bookingDoc = await bookingRef.get();
+
+    if (!bookingDoc.exists) {
+      return res.status(404).json({ message: 'Booking not found.' });
+    }
+
+    const bookingData = bookingDoc.data();
+    if (req.customUser.role !== 'admin' && declinerId !== bookingData.ownerId) {
+        return res.status(403).json({ message: 'You are not authorized to decline this booking.' });
+    }
+    
+    await bookingRef.update({
+      paymentStatus: 'declined_by_owner',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    res.status(200).json({ message: 'Booking request declined.' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error declining booking request.' });
+  }
+};
+
+/**
  * Get all bookings for vehicles owned by the authenticated user.
  */
 const getOwnerBookings = async (req, res) => {
-  try {
-    const ownerId = req.customUser.uid;
-    log(`Fetching bookings for vehicles owned by user ID: ${ownerId}`);
+    try {
+        const ownerId = req.customUser.uid;
+        log(`Fetching bookings for vehicles owned by user ID: ${ownerId}`);
 
-    const vehiclesRef = db.collection('vehicles').where('ownerId', '==', ownerId);
-    const vehiclesSnapshot = await vehiclesRef.get();
+        const vehiclesRef = db.collection('vehicles').where('ownerId', '==', ownerId);
+        const vehiclesSnapshot = await vehiclesRef.get();
 
-    if (vehiclesSnapshot.empty) {
-      log('Owner has no registered vehicles.');
-      return res.status(200).json([]);
+        if (vehiclesSnapshot.empty) {
+            return res.status(200).json([]);
+        }
+
+        const vehicleIds = vehiclesSnapshot.docs.map(doc => doc.id);
+        const vehiclesMap = new Map(vehiclesSnapshot.docs.map(doc => [doc.id, doc.data()]));
+
+        const bookingsRef = db.collection('bookings').where('vehicleId', 'in', vehicleIds);
+        const bookingsSnapshot = await bookingsRef.get();
+
+        if (bookingsSnapshot.empty) {
+            return res.status(200).json([]);
+        }
+
+        const bookingsData = bookingsSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+        const renterIds = [...new Set(bookingsData.map(b => b.renterId).filter(Boolean))];
+        const renterPromises = renterIds.map(id => db.collection('users').doc(id).get());
+        const renterDocs = await Promise.all(renterPromises);
+        
+        const rentersMap = new Map();
+        renterDocs.forEach(doc => {
+            if (doc.exists) {
+                rentersMap.set(doc.id, doc.data());
+            }
+        });
+
+        const enrichedBookings = bookingsData.map(booking => {
+            const vehicleData = vehiclesMap.get(booking.vehicleId);
+            const renterData = rentersMap.get(booking.renterId);
+
+            const startDate = convertToDate(booking.startDate);
+            const endDate = convertToDate(booking.endDate);
+
+            return {
+                id: booking.id,
+                ...booking,
+                startDate: startDate ? startDate.toISOString() : null,
+                endDate: endDate ? endDate.toISOString() : null,
+                renterDetails: renterData ? {
+                    username: `${renterData.firstName || ''} ${renterData.lastName || ''}`.trim(),
+                } : { username: 'N/A' },
+                vehicleDetails: vehicleData ? {
+                    make: vehicleData.make,
+                    model: vehicleData.model,
+                } : { make: 'Unknown', model: 'Vehicle' },
+            };
+        });
+
+        res.status(200).json(enrichedBookings);
+    } catch (error) {
+        console.error('[BookingController] Error fetching owner bookings:', error);
+        res.status(500).json({ message: 'Error fetching owner bookings.' });
     }
-
-    const vehicleIds = vehiclesSnapshot.docs.map((doc) => doc.id);
-
-    const bookingsRef = db.collection('bookings').where('vehicleId', 'in', vehicleIds);
-    const bookingsSnapshot = await bookingsRef.get();
-
-    if (bookingsSnapshot.empty) {
-      log("No bookings found for owner's vehicles.");
-      return res.status(200).json([]);
-    }
-
-    const bookings = [];
-    for (const doc of bookingsSnapshot.docs) {
-      bookings.push({ id: doc.id, ...doc.data() });
-    }
-
-    res.status(200).json(bookings);
-  } catch (error) {
-    console.error('[BookingController] Error fetching owner bookings:', error);
-    res
-      .status(500)
-      .json({ message: 'Error fetching owner bookings.', error: error.message });
-  }
 };
 
 module.exports = {
@@ -668,5 +753,7 @@ module.exports = {
   updateBookingStatus,
   deleteBooking,
   confirmBookingPayment,
+  approveBooking,
+  declineBooking,
   getOwnerBookings,
 };

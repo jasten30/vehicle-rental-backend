@@ -164,9 +164,9 @@ const getVehicleById = async (req, res) => {
 const addVehicle = async (req, res) => {
   try {
     const {
-        make, model, year, seatingCapacity, vehicleType, transmission, fuelType,
-        availability, location, pricing, safety, exteriorPhotos, interiorPhotos,
-        profilePhotoUrl, cor, or, driversLicense, payoutDetails, features,
+      make, model, year, seatingCapacity, vehicleType, transmission, fuelType,
+      availability, location, pricing, safety, exteriorPhotos, interiorPhotos,
+      profilePhotoUrl, cor, or, features,
     } = req.body;
     const ownerId = req.customUser.uid;
 
@@ -177,33 +177,37 @@ const addVehicle = async (req, res) => {
     const coordinates = await geocodeLocation(location);
 
     const newVehicle = {
-        ownerId,
-        make,
-        model,
-        year: parseInt(year, 10),
-        seatingCapacity: seatingCapacity ? parseInt(seatingCapacity, 10) : null,
-        rentalPricePerDay: parseFloat(pricing?.manualPrice),
-        location,
-        latitude: coordinates ? coordinates.lat : null,
-        longitude: coordinates ? coordinates.lon : null,
-        availability: availability || [],
-        vehicleType,
-        transmission,
-        fuelType,
-        features,
-        pricing,
-        safety,
-        cor,
-        or,
-        profilePhotoUrl,
-        exteriorPhotos,
-        interiorPhotos,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      ownerId,
+      make,
+      model,
+      year: parseInt(year, 10),
+      seatingCapacity: seatingCapacity ? parseInt(seatingCapacity, 10) : null,
+      rentalPricePerDay: parseFloat(pricing?.manualPrice),
+      location,
+      latitude: coordinates ? coordinates.lat : null,
+      longitude: coordinates ? coordinates.lon : null,
+      // UPDATED: Use the 'availability' constant directly from req.body
+      availability: (availability || []).map(period => ({
+        start: admin.firestore.Timestamp.fromDate(new Date(period.start)),
+        end: admin.firestore.Timestamp.fromDate(new Date(period.end)),
+      })),
+      vehicleType,
+      transmission,
+      fuelType,
+      features,
+      pricing,
+      safety,
+      cor,
+      or,
+      profilePhotoUrl,
+      exteriorPhotos,
+      interiorPhotos,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
     const docRef = await db.collection('vehicles').add(newVehicle);
-    res.status(201).json({ id: docRef.id, ...newVehicle });
+    res.status(201).json({ id: docRef.id });
   } catch (error) {
     console.error('[VehicleController] Error adding vehicle:', error);
     res.status(500).json({ message: 'Error adding vehicle.', error: error.message });

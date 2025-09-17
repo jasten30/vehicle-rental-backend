@@ -141,6 +141,31 @@ const updateUserProfile = async (req, res) => {
   }
 };
 
+/**
+ * Submits a new host application for review.
+ */
+const submitHostApplication = async (req, res) => {
+  try {
+    const userId = req.customUser.uid;
+    const applicationData = req.body;
+
+    const application = {
+      ...applicationData,
+      userId: userId,
+      status: 'pending',
+      submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    await db.collection('hostApplications').add(application);
+    log(`New host application submitted by user: ${userId}`);
+    res.status(201).json({ message: 'Application submitted successfully.' });
+  } catch (error) {
+    // UPDATED: Added detailed error logging
+    console.error('Error submitting host application:', error);
+    res.status(500).json({ message: 'Failed to submit application.' });
+  }
+};
+
 const getAllUsers = async (req, res) => {
   try {
     const usersSnapshot = await db.collection('users').get();
@@ -243,12 +268,69 @@ const verifyEmailCode = async (req, res) => {
   }
 };
 
+const getAllHostApplications = async (req, res) => {
+  try {
+    const snapshot = await db.collection('hostApplications').where('status', '==', 'pending').get();
+    if (snapshot.empty) {
+      return res.status(200).json([]);
+    }
+    const applications = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+    res.status(200).json(applications);
+  } catch (error) {
+    res.status(500).json({ message: 'Failed to fetch host applications.' });
+  }
+};
+
+/**
+ * Approves a host application.
+ */
+const approveHostApplication = async (req, res) => {
+  try {
+    const { applicationId, userId } = req.body;
+    
+    // 1. Update the application status to 'approved'
+    await db.collection('hostApplications').doc(applicationId).update({ status: 'approved' });
+    
+    // 2. Update the user's role in Firestore to 'owner'
+    await db.collection('users').doc(userId).update({ role: 'owner', isApprovedToDrive: true });
+    
+    // 3. Update the user's custom claim in Firebase Auth to 'owner'
+    await admin.auth().setCustomUserClaims(userId, { role: 'owner' });
+
+    log(`Host application ${applicationId} for user ${userId} approved.`);
+    res.status(200).json({ message: 'Host application approved successfully.' });
+  } catch (error) {
+    console.error('Error approving host application:', error);
+    res.status(500).json({ message: 'Failed to approve application.' });
+  }
+};
+
+/**
+ * Declines a host application.
+ */
+const declineHostApplication = async (req, res) => {
+  try {
+    const { applicationId } = req.body;
+    await db.collection('hostApplications').doc(applicationId).update({ status: 'declined' });
+    
+    log(`Host application ${applicationId} declined.`);
+    res.status(200).json({ message: 'Host application declined successfully.' });
+  } catch (error) {
+    console.error('Error declining host application:', error);
+    res.status(500).json({ message: 'Failed to decline application.' });
+  }
+};
+
 module.exports = {
   createUserProfile,
   getUserProfile,
   updateUserProfile,
   getAllUsers,
+  submitHostApplication,
   updateUserRoleByAdmin,
   sendEmailVerificationCode,
   verifyEmailCode,
+  getAllHostApplications,
+  approveHostApplication,
+  declineHostApplication,
 };

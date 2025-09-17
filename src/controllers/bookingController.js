@@ -170,37 +170,21 @@ const apiCheckAvailability = async (req, res) => {
     const { vehicleId } = req.params;
     const { startDate, endDate } = req.query;
 
-    if (!vehicleId || !startDate || !endDate) {
-      return res.status(400).json({
-        message: 'Vehicle ID, start date, and end date are required.',
-      });
-    }
-
     const requestedStart = new Date(startDate);
     const requestedEnd = new Date(endDate);
-
-    if (
-      isNaN(requestedStart.getTime()) ||
-      isNaN(requestedEnd.getTime()) ||
-      requestedStart > requestedEnd
-    ) {
-      return res.status(400).json({ message: 'Invalid date range provided.' });
-    }
-
+    
     const vehicleDoc = await db.collection('vehicles').doc(vehicleId).get();
     if (!vehicleDoc.exists) {
       return res.status(404).json({ message: 'Vehicle not found.' });
     }
+    
+    // NEW LOGIC: Check for overlaps with the blocked dates array
     const vehicleData = vehicleDoc.data();
-    const vehicleUnavailablePeriods = vehicleData.availability || [];
+    const unavailablePeriods = vehicleData.availability || [];
 
-    for (const period of vehicleUnavailablePeriods) {
+    for (const period of unavailablePeriods) {
       const periodStart = convertToDate(period.start);
       const periodEnd = convertToDate(period.end);
-
-      if (!periodStart || !periodEnd) {
-        continue;
-      }
 
       if (requestedStart <= periodEnd && requestedEnd >= periodStart) {
         return res.status(200).json({
@@ -619,28 +603,58 @@ const approveBooking = async (req, res) => {
   try {
     const { bookingId } = req.params;
     const approverId = req.customUser.uid;
+    const approverRole = req.customUser.role;
 
     const bookingRef = db.collection('bookings').doc(bookingId);
-    const bookingDoc = await bookingRef.get();
-
-    if (!bookingDoc.exists) {
-      return res.status(404).json({ message: 'Booking not found.' });
-    }
     
-    // Add security check to ensure the approver is the vehicle owner or an admin
-    const bookingData = bookingDoc.data();
-    if (req.customUser.role !== 'admin' && approverId !== bookingData.ownerId) {
-        return res.status(403).json({ message: 'You are not authorized to approve this booking.' });
-    }
+    // Use a transaction to ensure data consistency
+    await db.runTransaction(async (transaction) => {
+      const bookingDoc = await transaction.get(bookingRef);
+      if (!bookingDoc.exists) {
+        throw new Error('Booking not found.');
+      }
 
-    await bookingRef.update({
-      paymentStatus: 'confirmed', // Or another status like 'awaiting_payment'
-      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      const bookingData = bookingDoc.data();
+      
+      // Security check: Only the vehicle owner or an admin can approve
+      if (approverRole !== 'admin' && approverId !== bookingData.ownerId) {
+        throw new Error('You are not authorized to approve this booking.');
+      }
+      
+      // Logic to increment the owner's monthly booking count ---
+      const ownerRef = db.collection('users').doc(bookingData.ownerId);
+      const ownerDoc = await transaction.get(ownerRef);
+      if (!ownerDoc.exists) {
+        throw new Error('Owner profile not found.');
+      }
+
+      const ownerData = ownerDoc.data();
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = (now.getMonth() + 1).toString().padStart(2, '0'); // e.g., 09 for September
+      const monthKey = `${year}-${month}`; // e.g., "2025-09"
+
+      const monthlyCounts = ownerData.monthlyBookingCounts || {};
+      const currentMonthCount = monthlyCounts[monthKey] || 0;
+      
+      // Update the count for the current month
+      monthlyCounts[monthKey] = currentMonthCount + 1;
+      
+      // Update the owner's document with the new count
+      transaction.update(ownerRef, { monthlyBookingCounts: monthlyCounts });
+      // --- END LOGIC ---
+
+      // Update the booking status
+      transaction.update(bookingRef, {
+        paymentStatus: 'confirmed',
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
     });
 
-    res.status(200).json({ message: 'Booking request approved.' });
+    res.status(200).json({ message: 'Booking request approved successfully.' });
   } catch (error) {
-    res.status(500).json({ message: 'Error approving booking request.' });
+    console.error('Error approving booking request:', error);
+    res.status(500).json({ message: error.message || 'Error approving booking request.' });
   }
 };
 

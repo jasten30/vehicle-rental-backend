@@ -34,4 +34,29 @@ router.post(
   userController.verifyEmailCode
 );
 
+// Route for submitting a host application
+router.post(
+  '/submit-host-application',
+  verifyToken,
+  authorizeRole(['renter']),
+  userController.submitHostApplication
+);
+
+router.get('/host-applications', verifyToken, authorizeRole(['admin']), userController.getAllHostApplications);
+
+// Routes for admin to manage host applications
+router.put(
+  '/approve-host-application',
+  verifyToken,
+  authorizeRole(['admin']),
+  userController.approveHostApplication
+);
+
+router.put(
+  '/decline-host-application',
+  verifyToken,
+  authorizeRole(['admin']),
+  userController.declineHostApplication
+);
+
 module.exports = router;

@@ -142,11 +142,10 @@ const createBooking = async (req, res) => {
     const newBooking = {
       vehicleId,
       renterId,
-      ownerId, // Store the owner's ID for easy lookup
+      ownerId, 
       startDate: admin.firestore.Timestamp.fromDate(start),
       endDate: admin.firestore.Timestamp.fromDate(end),
       totalCost: parseFloat(totalCost),
-      // UPDATED: The initial status is now 'pending_owner_approval'
       paymentStatus: 'pending_owner_approval', 
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -177,8 +176,7 @@ const apiCheckAvailability = async (req, res) => {
     if (!vehicleDoc.exists) {
       return res.status(404).json({ message: 'Vehicle not found.' });
     }
-    
-    // NEW LOGIC: Check for overlaps with the blocked dates array
+      
     const vehicleData = vehicleDoc.data();
     const unavailablePeriods = vehicleData.availability || [];
 
@@ -607,7 +605,6 @@ const approveBooking = async (req, res) => {
 
     const bookingRef = db.collection('bookings').doc(bookingId);
     
-    // Use a transaction to ensure data consistency
     await db.runTransaction(async (transaction) => {
       const bookingDoc = await transaction.get(bookingRef);
       if (!bookingDoc.exists) {
@@ -616,12 +613,11 @@ const approveBooking = async (req, res) => {
 
       const bookingData = bookingDoc.data();
       
-      // Security check: Only the vehicle owner or an admin can approve
       if (approverRole !== 'admin' && approverId !== bookingData.ownerId) {
         throw new Error('You are not authorized to approve this booking.');
       }
       
-      // Logic to increment the owner's monthly booking count ---
+      // --- ADD THIS BLOCK BACK ---
       const ownerRef = db.collection('users').doc(bookingData.ownerId);
       const ownerDoc = await transaction.get(ownerRef);
       if (!ownerDoc.exists) {
@@ -631,27 +627,38 @@ const approveBooking = async (req, res) => {
       const ownerData = ownerDoc.data();
       const now = new Date();
       const year = now.getFullYear();
-      const month = (now.getMonth() + 1).toString().padStart(2, '0'); // e.g., 09 for September
-      const monthKey = `${year}-${month}`; // e.g., "2025-09"
+      const month = (now.getMonth() + 1).toString().padStart(2, '0');
+      const monthKey = `${year}-${month}`;
 
       const monthlyCounts = ownerData.monthlyBookingCounts || {};
       const currentMonthCount = monthlyCounts[monthKey] || 0;
       
-      // Update the count for the current month
       monthlyCounts[monthKey] = currentMonthCount + 1;
       
-      // Update the owner's document with the new count
       transaction.update(ownerRef, { monthlyBookingCounts: monthlyCounts });
-      // --- END LOGIC ---
+      // --- END BLOCK TO ADD ---
 
-      // Update the booking status
       transaction.update(bookingRef, {
         paymentStatus: 'confirmed',
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
+
+      const chatRef = db.collection('chats').doc(bookingId);
+      transaction.set(chatRef, {
+        bookingId: bookingId,
+        ownerId: bookingData.ownerId,
+        renterId: bookingData.renterId,
+        participants: [bookingData.ownerId, bookingData.renterId],
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        lastMessage: {
+          text: 'Booking confirmed! You can now chat to arrange the meetup.',
+          timestamp: admin.firestore.FieldValue.serverTimestamp(),
+          senderId: 'system',
+        },
+      });
     });
 
-    res.status(200).json({ message: 'Booking request approved successfully.' });
+    res.status(200).json({ message: 'Booking request approved and chat created.' });
   } catch (error) {
     console.error('Error approving booking request:', error);
     res.status(500).json({ message: error.message || 'Error approving booking request.' });

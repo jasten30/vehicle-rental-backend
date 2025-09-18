@@ -10,6 +10,7 @@ const vehicleRoutes = require('./routes/vehicleRoutes');
 const bookingRoutes = require('./routes/bookingRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const userRoutes = require('./routes/userRoutes');
+const chatRoutes = require('./routes/chatRoutes');
 
 const app = express();
 // The port is set to 5001 to match the frontend
@@ -18,7 +19,7 @@ const PORT = process.env.PORT || 5001;
 // Middleware
 app.use(cors()); // Enable CORS for all origins
 
-// CORRECTED: Parse JSON request bodies with a larger payload limit
+// Parse JSON request bodies with a larger payload limit
 app.use(bodyParser.json({ limit: '50mb' })); 
 app.use(bodyParser.urlencoded({ extended: true, limit: '50mb' }));
 
@@ -39,6 +40,9 @@ app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).send('Something broke!');
 });
+
+// Chats
+app.use('/api/chats', chatRoutes);
 
 // Start the server
 app.listen(PORT, () => {

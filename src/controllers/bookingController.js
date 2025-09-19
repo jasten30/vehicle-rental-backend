@@ -116,7 +116,6 @@ const getAllBookings = async (req, res) => {
  */
 const createBooking = async (req, res) => {
   try {
-    // UPDATED: We only need vehicleId, dates, and totalCost
     const { vehicleId, startDate, endDate, totalCost } = req.body;
     const renterId = req.customUser.uid;
 
@@ -136,7 +135,6 @@ const createBooking = async (req, res) => {
       return res.status(404).json({ message: 'Vehicle not found.' });
     }
     
-    // Get the ownerId from the vehicle document
     const ownerId = vehicleDoc.data().ownerId;
 
     const newBooking = {
@@ -439,22 +437,18 @@ const getBookingById = async (req, res) => {
 
     const bookingData = bookingDoc.data();
 
-    // Fetch Vehicle Data
     const vehicleDoc = await db.collection('vehicles').doc(bookingData.vehicleId).get();
     const vehicleData = vehicleDoc.exists ? vehicleDoc.data() : null;
 
-    // Fetch Renter Data
     const renterDoc = await db.collection('users').doc(bookingData.renterId).get();
     const renterData = renterDoc.exists ? renterDoc.data() : null;
 
-    // Fetch Owner Data
     let ownerData = null;
     if (vehicleData && vehicleData.ownerId) {
       const ownerDoc = await db.collection('users').doc(vehicleData.ownerId).get();
       ownerData = ownerDoc.exists ? ownerDoc.data() : null;
     }
     
-    // Authorization Check (can now be simpler)
     const requesterId = req.customUser.uid;
     const requesterRole = req.customUser.role;
     if (requesterRole !== 'admin' && requesterId !== bookingData.renterId && requesterId !== vehicleData.ownerId) {
@@ -554,7 +548,6 @@ const confirmBookingPayment = async (req, res) => {
       return res.status(404).json({ message: 'Booking not found.' });
     }
 
-    // --- ADDED SECURITY CHECK ---
     const bookingData = bookingDoc.data();
     const vehicleDoc = await db
       .collection('vehicles')
@@ -567,7 +560,6 @@ const confirmBookingPayment = async (req, res) => {
 
     const vehicleOwnerId = vehicleDoc.data().ownerId;
 
-    // Allow if the requester is an admin OR if they are the vehicle's actual owner
     if (approverRole !== 'admin' && approverId !== vehicleOwnerId) {
       log(
         `SECURITY ALERT: User ${approverId} (role: ${approverRole}) attempted to confirm payment for a vehicle they do not own (owner: ${vehicleOwnerId}).`
@@ -576,7 +568,6 @@ const confirmBookingPayment = async (req, res) => {
         message: 'You are not authorized to confirm payments for this vehicle.',
       });
     }
-    // --- END SECURITY CHECK ---
 
     await bookingRef.update({
       paymentStatus: 'confirmed',
@@ -606,43 +597,51 @@ const approveBooking = async (req, res) => {
     const bookingRef = db.collection('bookings').doc(bookingId);
     
     await db.runTransaction(async (transaction) => {
+      // --- (1) READ PHASE ---
       const bookingDoc = await transaction.get(bookingRef);
-      if (!bookingDoc.exists) {
-        throw new Error('Booking not found.');
-      }
+      if (!bookingDoc.exists) throw new Error('Booking not found.');
 
       const bookingData = bookingDoc.data();
+      const ownerRef = db.collection('users').doc(bookingData.ownerId);
+      const vehicleRef = db.collection('vehicles').doc(bookingData.vehicleId);
+
+      const [ownerDoc, vehicleDoc] = await Promise.all([
+        transaction.get(ownerRef),
+        transaction.get(vehicleRef)
+      ]);
+
+      if (!ownerDoc.exists) throw new Error('Owner profile not found.');
+      if (!vehicleDoc.exists) throw new Error('Associated vehicle not found.');
       
+      // --- (2) LOGIC & PREPARATION PHASE ---
       if (approverRole !== 'admin' && approverId !== bookingData.ownerId) {
         throw new Error('You are not authorized to approve this booking.');
-      }
-      
-      // --- ADD THIS BLOCK BACK ---
-      const ownerRef = db.collection('users').doc(bookingData.ownerId);
-      const ownerDoc = await transaction.get(ownerRef);
-      if (!ownerDoc.exists) {
-        throw new Error('Owner profile not found.');
       }
 
       const ownerData = ownerDoc.data();
       const now = new Date();
-      const year = now.getFullYear();
-      const month = (now.getMonth() + 1).toString().padStart(2, '0');
-      const monthKey = `${year}-${month}`;
-
+      const monthKey = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, '0')}`;
       const monthlyCounts = ownerData.monthlyBookingCounts || {};
-      const currentMonthCount = monthlyCounts[monthKey] || 0;
-      
-      monthlyCounts[monthKey] = currentMonthCount + 1;
-      
-      transaction.update(ownerRef, { monthlyBookingCounts: monthlyCounts });
-      // --- END BLOCK TO ADD ---
+      monthlyCounts[monthKey] = (monthlyCounts[monthKey] || 0) + 1;
 
+      const vehicleData = vehicleDoc.data();
+      
+      const currentAvailability = Array.isArray(vehicleData.availability) ? vehicleData.availability : [];
+      
+      const newUnavailableRange = {
+        start: bookingData.startDate,
+        end: bookingData.endDate,
+        bookingId: bookingId,
+      };
+
+      // --- (3) WRITE PHASE ---
+      transaction.update(ownerRef, { monthlyBookingCounts: monthlyCounts });
+      transaction.update(vehicleRef, { availability: [...currentAvailability, newUnavailableRange] });
       transaction.update(bookingRef, {
         paymentStatus: 'confirmed',
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
-
+      
       const chatRef = db.collection('chats').doc(bookingId);
       transaction.set(chatRef, {
         bookingId: bookingId,
@@ -654,11 +653,16 @@ const approveBooking = async (req, res) => {
           text: 'Booking confirmed! You can now chat to arrange the meetup.',
           timestamp: admin.firestore.FieldValue.serverTimestamp(),
           senderId: 'system',
+          readBy: [approverId],
         },
       });
     });
 
-    res.status(200).json({ message: 'Booking request approved and chat created.' });
+    const updatedOwnerDoc = await db.collection('users').doc(approverId).get();
+    res.status(200).json({ 
+      message: 'Booking request approved, chat created, and calendar updated.',
+      updatedOwner: updatedOwnerDoc.data()
+    });
   } catch (error) {
     console.error('Error approving booking request:', error);
     res.status(500).json({ message: error.message || 'Error approving booking request.' });
@@ -778,3 +782,4 @@ module.exports = {
   declineBooking,
   getOwnerBookings,
 };
+

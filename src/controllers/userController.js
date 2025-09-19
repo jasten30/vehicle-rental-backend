@@ -75,6 +75,9 @@ const getUserProfile = async (req, res) => {
       isMobileVerified: userData.isMobileVerified || false,
       emailVerified: userData.emailVerified || false,
       createdAt: userData.createdAt || null,
+      // --- THIS IS THE FIX ---
+      // Ensure monthlyBookingCounts is always included in the user profile
+      monthlyBookingCounts: userData.monthlyBookingCounts || {},
     };
     res.status(200).json(profile);
   } catch (error) {
@@ -141,9 +144,6 @@ const updateUserProfile = async (req, res) => {
   }
 };
 
-/**
- * Submits a new host application for review.
- */
 const submitHostApplication = async (req, res) => {
   try {
     const userId = req.customUser.uid;
@@ -160,7 +160,6 @@ const submitHostApplication = async (req, res) => {
     log(`New host application submitted by user: ${userId}`);
     res.status(201).json({ message: 'Application submitted successfully.' });
   } catch (error) {
-    // UPDATED: Added detailed error logging
     console.error('Error submitting host application:', error);
     res.status(500).json({ message: 'Failed to submit application.' });
   }
@@ -281,20 +280,14 @@ const getAllHostApplications = async (req, res) => {
   }
 };
 
-/**
- * Approves a host application.
- */
 const approveHostApplication = async (req, res) => {
   try {
     const { applicationId, userId } = req.body;
     
-    // 1. Update the application status to 'approved'
     await db.collection('hostApplications').doc(applicationId).update({ status: 'approved' });
     
-    // 2. Update the user's role in Firestore to 'owner'
     await db.collection('users').doc(userId).update({ role: 'owner', isApprovedToDrive: true });
     
-    // 3. Update the user's custom claim in Firebase Auth to 'owner'
     await admin.auth().setCustomUserClaims(userId, { role: 'owner' });
 
     log(`Host application ${applicationId} for user ${userId} approved.`);
@@ -305,9 +298,6 @@ const approveHostApplication = async (req, res) => {
   }
 };
 
-/**
- * Declines a host application.
- */
 const declineHostApplication = async (req, res) => {
   try {
     const { applicationId } = req.body;
@@ -327,6 +317,7 @@ module.exports = {
   updateUserProfile,
   getAllUsers,
   submitHostApplication,
+  updateUserProfile,
   updateUserRoleByAdmin,
   sendEmailVerificationCode,
   verifyEmailCode,

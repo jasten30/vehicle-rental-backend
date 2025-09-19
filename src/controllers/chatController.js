@@ -75,7 +75,7 @@ const sendMessage = async (req, res) => {
     
     await chatRef.collection('messages').add(message);
     
-    await chatRef.update({ lastMessage: { text, senderId, timestamp: message.timestamp } });
+    await chatRef.update({ lastMessage: { text, senderId, timestamp: message.timestamp, readBy: [senderId], } });
 
     res.status(201).json({ message: 'Message sent successfully.' });
   } catch (error) {
@@ -84,7 +84,30 @@ const sendMessage = async (req, res) => {
   }
 };
 
+/**
+ * Marks a chat as read by the current user.
+ */
+const markChatAsRead = async (req, res) => {
+    try {
+        const { chatId } = req.params;
+        const userId = req.customUser.uid;
+
+        const chatRef = db.collection('chats').doc(chatId);
+        
+        // Use arrayUnion to safely add the user's ID to the readBy array
+        await chatRef.update({
+            'lastMessage.readBy': admin.firestore.FieldValue.arrayUnion(userId)
+        });
+
+        res.status(200).json({ message: 'Chat marked as read.' });
+    } catch (error) {
+        console.error(`Error marking chat ${req.params.chatId} as read:`, error);
+        res.status(500).json({ message: 'Failed to mark chat as read.' });
+    }
+};
+
 module.exports = {
   getUserChats,
   sendMessage,
+  markChatAsRead,
 };

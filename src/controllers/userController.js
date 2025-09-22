@@ -75,8 +75,6 @@ const getUserProfile = async (req, res) => {
       isMobileVerified: userData.isMobileVerified || false,
       emailVerified: userData.emailVerified || false,
       createdAt: userData.createdAt || null,
-      // --- THIS IS THE FIX ---
-      // Ensure monthlyBookingCounts is always included in the user profile
       monthlyBookingCounts: userData.monthlyBookingCounts || {},
     };
     res.status(200).json(profile);
@@ -142,6 +140,41 @@ const updateUserProfile = async (req, res) => {
     console.error('Error updating user profile:', error);
     res.status(500).json({ message: 'Server error updating user profile.' });
   }
+};
+
+const submitDriveApplication = async (req, res) => {
+    try {
+        const userId = req.customUser.uid;
+        const { otherIdType, licenseImageBase64, otherIdImageBase64 } = req.body;
+
+        if (!licenseImageBase64 || !otherIdImageBase64 || !otherIdType) {
+            return res.status(400).json({ message: 'Missing required application data or images.' });
+        }
+
+        const [licenseUrl, otherIdUrl] = await Promise.all([
+            uploadBase64Image(licenseImageBase64, 'drive_applications'),
+            uploadBase64Image(otherIdImageBase64, 'drive_applications')
+        ]);
+
+        if (!licenseUrl || !otherIdUrl) {
+            return res.status(500).json({ message: 'Failed to upload one or more ID photos.' });
+        }
+        
+        const applicationData = {
+            userId: userId,
+            status: 'pending',
+            submittedAt: admin.firestore.FieldValue.serverTimestamp(),
+            licenseUrl: licenseUrl,
+            otherIdType: otherIdType,
+            otherIdUrl: otherIdUrl,
+        };
+
+        await db.collection('driveApplications').add(applicationData);
+        res.status(201).json({ message: 'Driver application submitted successfully.' });
+    } catch (error) {
+        console.error('Error submitting drive application:', error);
+        res.status(500).json({ message: 'Server error while submitting application.' });
+    }
 };
 
 const submitHostApplication = async (req, res) => {
@@ -315,9 +348,9 @@ module.exports = {
   createUserProfile,
   getUserProfile,
   updateUserProfile,
+  submitDriveApplication,
   getAllUsers,
   submitHostApplication,
-  updateUserProfile,
   updateUserRoleByAdmin,
   sendEmailVerificationCode,
   verifyEmailCode,
@@ -325,3 +358,4 @@ module.exports = {
   approveHostApplication,
   declineHostApplication,
 };
+

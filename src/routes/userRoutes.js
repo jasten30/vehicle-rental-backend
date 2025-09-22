@@ -6,7 +6,6 @@ const { verifyToken, authorizeRole } = require('../middleware/authMiddleware');
 // Protected routes (require valid token)
 router.get('/profile', verifyToken, userController.getUserProfile);
 router.put('/profile', verifyToken, userController.updateUserProfile);
-router.post('/', verifyToken, userController.updateUserProfile);
 
 // Admin routes (require 'admin' role)
 router.get(
@@ -25,12 +24,12 @@ router.put(
 // Routes for email verification
 router.post(
   '/send-email-verification',
-  verifyToken, // Use the destructured 'verifyToken'
+  verifyToken,
   userController.sendEmailVerificationCode
 );
 router.post(
   '/verify-email-code',
-  verifyToken, // Use the destructured 'verifyToken'
+  verifyToken,
   userController.verifyEmailCode
 );
 
@@ -40,6 +39,13 @@ router.post(
   verifyToken,
   authorizeRole(['renter']),
   userController.submitHostApplication
+);
+
+// UPDATED: Route for submitting the driver application now accepts JSON with Base64 strings
+router.post(
+    '/drive-application',
+    verifyToken,
+    userController.submitDriveApplication
 );
 
 router.get('/host-applications', verifyToken, authorizeRole(['admin']), userController.getAllHostApplications);
@@ -60,3 +66,4 @@ router.put(
 );
 
 module.exports = router;
+

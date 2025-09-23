@@ -1,7 +1,5 @@
 const express = require('express');
 const cors = require('cors');
-// The 'body-parser' library is no longer needed
-// const bodyParser = require('body-parser');
 
 // Import route modules
 const authRoutes = require('./routes/authRoutes');
@@ -10,18 +8,30 @@ const bookingRoutes = require('./routes/bookingRoutes');
 const paymentRoutes = require('./routes/paymentRoutes');
 const userRoutes = require('./routes/userRoutes');
 const chatRoutes = require('./routes/chatRoutes');
-const adminRoutes = require('./routes/adminRoutes'); // Assuming you have this from previous steps
+const adminRoutes = require('./routes/adminRoutes');
+const reviewsRoutes = require('./routes/reviewsRoutes');
 
 const app = express();
-const PORT = process.env.PORT || 5001; 
+const PORT = process.env.PORT || 5001;
 
-// Middleware
-app.use(cors()); // Enable CORS for all origins
+// --- START: NEW DEBUGGING MIDDLEWARE ---
+// This will run for EVERY request that comes into your server.
+// It will help us see if the frontend is communicating with the backend at all.
+app.use((req, res, next) => {
+  console.log(`[Request Logger] Method: ${req.method}, URL: ${req.originalUrl}, Time: ${new Date().toISOString()}`);
+  next(); // Pass control to the next middleware
+});
+// --- END: NEW DEBUGGING MIDDLEWARE ---
 
-// --- THIS IS THE FIX ---
-// Use the modern, built-in Express middleware for parsing JSON.
-// This replaces the deprecated 'body-parser'.
-app.use(express.json({ limit: '50mb' })); 
+
+app.use(cors({
+  origin: ['http://localhost:8080', 'http://localhost:5000'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+}));
+
+
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Route Middlewares
@@ -31,7 +41,8 @@ app.use('/api/bookings', bookingRoutes);
 app.use('/api/payment', paymentRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/chats', chatRoutes);
-app.use('/api/admin', adminRoutes); // Assuming you have this from previous steps
+app.use('/api/admin', adminRoutes);
+app.use('/api/reviews', reviewsRoutes);
 
 // Basic route for testing
 app.get('/', (req, res) => {
@@ -44,7 +55,7 @@ app.use((err, req, res, next) => {
   res.status(500).send('Something broke!');
 });
 
-// Start the server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
+

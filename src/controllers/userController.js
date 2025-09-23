@@ -142,6 +142,46 @@ const updateUserProfile = async (req, res) => {
   }
 };
 
+const deleteUser = async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    // Find and delete all vehicles owned by the user
+    const vehiclesRef = db.collection('vehicles');
+    const snapshot = await vehiclesRef.where('ownerId', '==', userId).get();
+
+    if (!snapshot.empty) {
+      console.log(`[UserController] Found ${snapshot.size} vehicle(s) to delete for user ${userId}.`);
+      const batch = db.batch();
+      snapshot.docs.forEach(doc => {
+        batch.delete(doc.ref);
+      });
+      await batch.commit();
+      console.log(`[UserController] Successfully deleted vehicles for user ${userId}.`);
+    }
+
+    try {
+      await admin.auth().deleteUser(userId);
+      console.log(`[UserController] Successfully deleted user from Firebase Auth: ${userId}`);
+    } catch (error) {
+      if (error.code === 'auth/user-not-found') {
+        console.warn(`[UserController] User not found in Firebase Auth, but proceeding with Firestore cleanup for UID: ${userId}`);
+      } else {
+        throw error;
+      }
+    }
+    
+    const userRef = db.collection('users').doc(userId);
+    await userRef.delete();
+    console.log(`[UserController] Successfully deleted user from Firestore: ${userId}`);
+
+    res.status(200).json({ message: 'User and all associated data have been deleted successfully.' });
+  } catch (error) {
+    console.error(`Error during deletion process for user ${req.params.userId}:`, error);
+    res.status(500).json({ message: 'Failed to complete the user deletion process.' });
+  }
+};
+
 const submitDriveApplication = async (req, res) => {
     try {
         const userId = req.customUser.uid;
@@ -344,10 +384,12 @@ const declineHostApplication = async (req, res) => {
   }
 };
 
+
 module.exports = {
   createUserProfile,
   getUserProfile,
   updateUserProfile,
+  deleteUser,
   submitDriveApplication,
   getAllUsers,
   submitHostApplication,

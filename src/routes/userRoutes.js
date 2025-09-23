@@ -7,6 +7,14 @@ const { verifyToken, authorizeRole } = require('../middleware/authMiddleware');
 router.get('/profile', verifyToken, userController.getUserProfile);
 router.put('/profile', verifyToken, userController.updateUserProfile);
 
+// Route for an admin to delete a user and their associated data
+router.delete(
+  '/:userId',
+  verifyToken,
+  authorizeRole(['admin']),
+  userController.deleteUser
+);
+
 // Admin routes (require 'admin' role)
 router.get(
   '/all-users',

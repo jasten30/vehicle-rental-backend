@@ -1,4 +1,5 @@
 const { admin, db } = require('../utils/firebase');
+const { createNotification } = require('../utils/notificationHelper'); 
 
 const log = (message, data = '') => {
   console.log(`[ChatController] ${message}`, data);
@@ -32,13 +33,12 @@ const getUserChats = async (req, res) => {
         }
       }
 
-      // This logic ensures a default lastMessage object always exists
       const lastMessage = chatData.lastMessage || { text: 'No messages yet.', senderId: 'system' };
 
       return {
         id: doc.id,
         ...chatData,
-        lastMessage, // Use the safe, defaulted lastMessage
+        lastMessage,
         otherUserDetails,
       };
     });
@@ -77,6 +77,22 @@ const sendMessage = async (req, res) => {
     
     await chatRef.update({ lastMessage: { text, senderId, timestamp: message.timestamp, readBy: [senderId], } });
 
+    
+    const participants = chatDoc.data().participants || [];
+    const recipientId = participants.find(id => id !== senderId);
+
+    if (recipientId) {
+      const senderDoc = await db.collection('users').doc(senderId).get();
+      const senderName = senderDoc.exists ? senderDoc.data().firstName : 'Someone';
+
+      await createNotification(
+        recipientId,
+        `${senderName} sent you a new message.`,
+        `/chat/${chatId}` // Link to the chat
+      );
+    }
+    
+
     res.status(201).json({ message: 'Message sent successfully.' });
   } catch (error) {
     console.error(`Error sending message to chat ${chatId}:`, error);
@@ -84,9 +100,6 @@ const sendMessage = async (req, res) => {
   }
 };
 
-/**
- * Marks a chat as read by the current user.
- */
 const markChatAsRead = async (req, res) => {
     try {
         const { chatId } = req.params;
@@ -94,7 +107,6 @@ const markChatAsRead = async (req, res) => {
 
         const chatRef = db.collection('chats').doc(chatId);
         
-        // Use arrayUnion to safely add the user's ID to the readBy array
         await chatRef.update({
             'lastMessage.readBy': admin.firestore.FieldValue.arrayUnion(userId)
         });

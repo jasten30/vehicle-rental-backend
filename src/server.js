@@ -10,26 +10,22 @@ const userRoutes = require('./routes/userRoutes');
 const chatRoutes = require('./routes/chatRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const reviewsRoutes = require('./routes/reviewsRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
 
-// --- START: NEW DEBUGGING MIDDLEWARE ---
-// This will run for EVERY request that comes into your server.
-// It will help us see if the frontend is communicating with the backend at all.
+// Request Logger Middleware
 app.use((req, res, next) => {
   console.log(`[Request Logger] Method: ${req.method}, URL: ${req.originalUrl}, Time: ${new Date().toISOString()}`);
-  next(); // Pass control to the next middleware
+  next();
 });
-// --- END: NEW DEBUGGING MIDDLEWARE ---
-
 
 app.use(cors({
   origin: ['http://localhost:8080', 'http://localhost:5000'],
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
-
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -43,6 +39,7 @@ app.use('/api/users', userRoutes);
 app.use('/api/chats', chatRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/reviews', reviewsRoutes);
+app.use('/api/notifications', notificationRoutes);
 
 // Basic route for testing
 app.get('/', (req, res) => {
@@ -58,4 +55,3 @@ app.use((err, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-

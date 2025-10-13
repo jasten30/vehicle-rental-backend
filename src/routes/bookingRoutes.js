@@ -6,7 +6,6 @@ const authMiddleware = require('../middleware/authMiddleware');
 
 // --- Specific routes must come before generic routes with parameters ---
 
-// UPDATED: This route now correctly matches GET /api/bookings/all
 router.get(
   '/all',
   authMiddleware.verifyToken,
@@ -14,7 +13,6 @@ router.get(
   bookingController.getAllBookings
 );
 
-// Route for owners to get bookings for all their vehicles
 router.get(
   '/owner',
   authMiddleware.verifyToken,
@@ -22,21 +20,18 @@ router.get(
   bookingController.getOwnerBookings
 );
 
-// Route to get bookings by a specific user
 router.get(
   '/user/:userId',
   authMiddleware.verifyToken,
   bookingController.getBookingsByUser
 );
 
-// Route to get all bookings for a specific vehicle
 router.get(
   '/vehicle/:vehicleId',
   authMiddleware.verifyToken,
   bookingController.getBookingsByVehicle
 );
 
-// Route to check vehicle availability
 router.get(
   '/availability/:vehicleId',
   authMiddleware.verifyToken,
@@ -45,14 +40,12 @@ router.get(
 
 // --- Generic routes with parameters should come last ---
 
-// Route to get a single booking by its ID
 router.get(
   '/:bookingId',
   authMiddleware.verifyToken,
   bookingController.getBookingById
 );
 
-// Route to create a new booking
 router.post(
   '/',
   authMiddleware.verifyToken,
@@ -60,7 +53,6 @@ router.post(
   bookingController.createBooking
 );
 
-// Route to update a booking's payment method
 router.put(
   '/:bookingId/payment-method',
   authMiddleware.verifyToken,
@@ -68,7 +60,6 @@ router.put(
   bookingController.updateBookingPaymentMethod
 );
 
-// Route to update a booking's status
 router.put(
   '/:bookingId/status',
   authMiddleware.verifyToken,
@@ -76,7 +67,6 @@ router.put(
   bookingController.updateBookingStatus
 );
 
-//Route for an owner/admin to confirm a payment
 router.put(
   '/:bookingId/confirm-payment',
   authMiddleware.verifyToken,
@@ -84,7 +74,6 @@ router.put(
   bookingController.confirmBookingPayment
 );
 
-// Route to delete a booking
 router.delete(
   '/:bookingId',
   authMiddleware.verifyToken,
@@ -92,8 +81,24 @@ router.delete(
   bookingController.deleteBooking
 );
 
-// Routes for owner to approve or decline a booking
 router.put('/:bookingId/approve', authMiddleware.verifyToken, authMiddleware.authorizeRole(['owner', 'admin']), bookingController.approveBooking);
 router.put('/:bookingId/decline', authMiddleware.verifyToken, authMiddleware.authorizeRole(['owner', 'admin']), bookingController.declineBooking);
+
+router.post(
+    '/:bookingId/confirm-downpayment-by-user',
+    authMiddleware.verifyToken,
+    authMiddleware.authorizeRole(['renter']),
+    bookingController.confirmDownpaymentByUser
+);
+
+// --- ADD THIS ROUTE TO FIX THE 404 ERROR ---
+// Route for owner/admin to confirm they have received the payment
+router.post(
+  '/:bookingId/confirm-owner-payment',
+  authMiddleware.verifyToken,
+  authMiddleware.authorizeRole(['owner', 'admin']),
+  bookingController.confirmOwnerPayment
+);
+
 
 module.exports = router;

@@ -3,30 +3,49 @@ const router = express.Router();
 const adminController = require('../controllers/adminController');
 const { verifyToken, authorizeRole } = require('../middleware/authMiddleware');
 
-// All routes in this file are protected and can only be accessed by an admin.
+// Protect all admin routes and ensure the user has the 'admin' role
+router.use(verifyToken, authorizeRole(['admin']));
+
+// --- Drive Applications ---
 
 // GET /api/admin/drive-applications
 router.get(
   '/drive-applications',
-  verifyToken,
-  authorizeRole(['admin']),
-  adminController.getDriveApplications
+  adminController.getDriveApplications // Middleware already applied via router.use
 );
 
 // POST /api/admin/drive-applications/approve
 router.post(
   '/drive-applications/approve',
-  verifyToken,
-  authorizeRole(['admin']),
-  adminController.approveDriveApplication
+  adminController.approveDriveApplication // Middleware already applied
 );
 
 // POST /api/admin/drive-applications/decline
 router.post(
   '/drive-applications/decline',
-  verifyToken,
-  authorizeRole(['admin']),
-  adminController.declineDriveApplication
+  adminController.declineDriveApplication // Middleware already applied
 );
+
+
+// --- Booking Reports ---
+
+// GET /api/admin/reports - Fetch all booking reports
+router.get(
+    '/reports',
+    adminController.getBookingReports // Middleware already applied
+);
+
+// PUT /api/admin/reports/:reportId/resolve - Mark a report as resolved
+router.put(
+    '/reports/:reportId/resolve',
+    adminController.resolveBookingReport // Middleware already applied
+);
+
+// --- Admin-User Chat ---
+router.post(
+    '/chats/find-or-create',
+    adminController.findOrCreateAdminUserChat // Point to new controller function
+);
+
 
 module.exports = router;

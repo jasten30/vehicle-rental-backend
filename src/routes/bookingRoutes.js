@@ -34,7 +34,8 @@ router.get(
 
 router.get(
   '/availability/:vehicleId',
-  authMiddleware.verifyToken,
+  authMiddleware.verifyToken, // Note: This check requires a renter role
+  authMiddleware.authorizeRole(['renter']), // Added authorization
   bookingController.apiCheckAvailability
 );
 
@@ -49,8 +50,14 @@ router.get(
 router.post(
   '/',
   authMiddleware.verifyToken,
-  authMiddleware.authorizeRole(['renter', 'owner']),
+  authMiddleware.authorizeRole(['renter']), // Only renters should create bookings
   bookingController.createBooking
+);
+
+router.post(
+  '/:bookingId/report',
+  authMiddleware.verifyToken, // Authorizes any logged-in user (renter or owner)
+  bookingController.submitBookingReport
 );
 
 router.put(
@@ -84,6 +91,13 @@ router.delete(
 router.put('/:bookingId/approve', authMiddleware.verifyToken, authMiddleware.authorizeRole(['owner', 'admin']), bookingController.approveBooking);
 router.put('/:bookingId/decline', authMiddleware.verifyToken, authMiddleware.authorizeRole(['owner', 'admin']), bookingController.declineBooking);
 
+router.put(
+  '/:bookingId/cancel',
+  authMiddleware.verifyToken,
+  authMiddleware.authorizeRole(['renter']),
+  bookingController.cancelBooking
+);
+
 router.post(
     '/:bookingId/confirm-downpayment-by-user',
     authMiddleware.verifyToken,
@@ -91,13 +105,19 @@ router.post(
     bookingController.confirmDownpaymentByUser
 );
 
-// --- ADD THIS ROUTE TO FIX THE 404 ERROR ---
-// Route for owner/admin to confirm they have received the payment
 router.post(
   '/:bookingId/confirm-owner-payment',
   authMiddleware.verifyToken,
   authMiddleware.authorizeRole(['owner', 'admin']),
   bookingController.confirmOwnerPayment
+);
+
+// --- ADD THIS ROUTE TO FIX THE 404 ERROR ---
+router.post(
+  '/:bookingId/request-extension',
+  authMiddleware.verifyToken,
+  authMiddleware.authorizeRole(['renter']),
+  bookingController.requestBookingExtension
 );
 
 

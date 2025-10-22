@@ -112,7 +112,6 @@ router.post(
   bookingController.confirmOwnerPayment
 );
 
-// --- ADD THIS ROUTE TO FIX THE 404 ERROR ---
 router.post(
   '/:bookingId/request-extension',
   authMiddleware.verifyToken,
@@ -120,5 +119,11 @@ router.post(
   bookingController.requestBookingExtension
 );
 
+router.post(
+  '/:bookingId/confirm-extension',
+  authMiddleware.verifyToken,
+  authMiddleware.authorizeRole(['renter']), 
+  bookingController.confirmExtensionPayment
+);
 
 module.exports = router;

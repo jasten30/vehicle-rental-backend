@@ -128,6 +128,7 @@ const createBooking = async (req, res) => {
       remainingBalance: remainingBalance,
       amountPaid: 0,
       paymentStatus: 'pending_owner_approval',
+      isReminderSent: false,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
@@ -988,6 +989,81 @@ const requestBookingExtension = async (req, res) => {
     }
 };
 
+const confirmExtensionPayment = async (req, res) => {
+    try {
+        const { bookingId } = req.params;
+        const { referenceNumber, amount } = req.body;
+        const renterId = req.customUser.uid;
+
+        if (!referenceNumber || !amount) {
+            return res.status(400).json({ message: 'Reference number and amount are required.' });
+        }
+
+        const bookingRef = db.collection('bookings').doc(bookingId);
+        const bookingDoc = await bookingRef.get();
+
+        if (!bookingDoc.exists) {
+            return res.status(404).json({ message: 'Booking not found.' });
+        }
+
+        const bookingData = bookingDoc.data();
+
+        // Validation 1: Renter owns this booking
+        if (bookingData.renterId !== renterId) {
+            return res.status(403).json({ message: 'You are not authorized to confirm this payment.' });
+        }
+
+        // Validation 2: Status must be pending extension payment
+        if (bookingData.paymentStatus !== 'pending_extension_payment') {
+            return res.status(400).json({ message: `Booking is not awaiting extension payment. Current status: ${bookingData.paymentStatus}` });
+        }
+
+        // Validation 3: Check if extensionRequest object exists
+        if (!bookingData.extensionRequest || bookingData.extensionRequest.status !== 'pending_payment') {
+             return res.status(400).json({ message: 'No valid, pending extension request found for this booking.' });
+        }
+
+        // Validation 4: Security - check if paid amount matches expected cost
+        const expectedCost = parseFloat(bookingData.extensionRequest.cost);
+        const paidAmount = parseFloat(amount);
+        
+        // Allow renter to pay more, but not less
+        if (paidAmount < expectedCost) {
+             return res.status(400).json({ message: `Payment amount (₱${paidAmount.toFixed(2)}) is less than the required extension cost (₱${expectedCost.toFixed(2)}).` });
+        }
+        
+        // Use the actual expected cost for calculations, not the (potentially higher) paid amount
+        const costToApply = expectedCost; 
+
+        // All checks passed. Update the booking.
+        await bookingRef.update({
+          paymentStatus: 'confirmed', // Set status back to confirmed
+          endDate: bookingData.extensionRequest.newEndDate, // Apply the new end date
+          totalCost: admin.firestore.FieldValue.increment(costToApply), // Add extension cost to total
+          amountPaid: admin.firestore.FieldValue.increment(costToApply), // Add extension cost to amount paid
+          // remainingBalance is unchanged (totalCost and amountPaid increased equally)
+          'extensionRequest.status': 'paid', // Mark the extension itself as paid
+          'extensionRequest.paymentReferenceNumber': referenceNumber,
+          'extensionRequest.paidAt': admin.firestore.FieldValue.serverTimestamp(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        // Notify Owner
+        await createNotification(
+            bookingData.ownerId,
+            `Renter paid the ₱${costToApply.toFixed(2)} extension fee for booking #${bookingId.substring(0,5)}. The trip is now extended.`,
+            `/booking/${bookingId}`
+        );
+
+        log(`Extension payment confirmed for booking ${bookingId} by renter ${renterId}.`);
+        res.status(200).json({ message: 'Extension payment successful. Booking updated.' });
+
+    } catch (error) {
+        console.error(`Error confirming extension payment for ${req.params.bookingId}:`, error);
+        res.status(500).json({ message: 'Server error confirming extension payment.', error: error.message });
+    }
+};
+
 module.exports = {
   getAllBookings,
   createBooking,
@@ -1007,4 +1083,5 @@ module.exports = {
   cancelBooking,
   submitBookingReport,
   requestBookingExtension,
+  confirmExtensionPayment
 };

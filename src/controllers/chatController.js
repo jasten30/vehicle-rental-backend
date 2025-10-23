@@ -1,8 +1,24 @@
-const { admin, db } = require('../utils/firebase');
-const { createNotification } = require('../utils/notificationHelper'); 
+const { admin, db, storageBucket } = require('../utils/firebase'); // 👈 THIS LINE IS FIXED
+const { createNotification } = require('../utils/notificationHelper');
 
 const log = (message, data = '') => {
   console.log(`[ChatController] ${message}`, data);
+};
+
+// 👇 This function uses storageBucket, which is now imported
+const uploadBase64Image = async (base64String, folderName) => {
+  if (!base64String || !base64String.startsWith('data:image/')) return null;
+  const matches = base64String.match(/^data:(image\/[a-z]+);base64,(.+)$/);
+  if (!matches || matches.length !== 3) throw new Error('Invalid Base64 string.');
+
+  const contentType = matches[1];
+  const buffer = Buffer.from(matches[2], 'base64');
+  const fileName = `${folderName}/${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const file = storageBucket.file(fileName);
+
+  await file.save(buffer, { metadata: { contentType }, public: true });
+  // Return the public URL
+  return `https://storage.googleapis.com/${storageBucket.name}/${fileName}`;
 };
 
 const getUserChats = async (req, res) => {
@@ -54,11 +70,11 @@ const getUserChats = async (req, res) => {
 const sendMessage = async (req, res) => {
   try {
     const { chatId } = req.params;
-    const { text } = req.body;
+    const { text, imageBase64 } = req.body;
     const senderId = req.customUser.uid;
 
-    if (!text) {
-      return res.status(400).json({ message: 'Message text is required.' });
+    if (!text && !imageBase64) {
+      return res.status(400).json({ message: 'Message text or image is required.' });
     }
 
     const chatRef = db.collection('chats').doc(chatId);
@@ -67,17 +83,47 @@ const sendMessage = async (req, res) => {
         return res.status(403).json({ message: 'Not authorized to send messages in this chat.' });
     }
 
+    let imageUrl = null;
+    let messageType = 'text';
+    let lastMessageText = text;
+
+    // 1. Upload image if it exists
+    if (imageBase64) {
+        try {
+            imageUrl = await uploadBase64Image(imageBase64, 'chat_messages');
+            if (!imageUrl) {
+                throw new Error('Image upload returned null URL.');
+            }
+            messageType = text ? 'text_with_image' : 'image';
+            lastMessageText = text ? text : 'Sent an image'; // Summary for last message
+        } catch (uploadError) {
+             console.error(`Error uploading chat image for chat ${chatId}:`, uploadError);
+             return res.status(500).json({ message: 'Failed to upload image.' });
+        }
+    }
+
+    // 2. Prepare message data
     const message = {
       senderId,
-      text,
+      text: text || null, // Store null if no text
+      imageUrl: imageUrl, // Store null if no image
+      type: messageType,
       timestamp: admin.firestore.FieldValue.serverTimestamp(),
     };
     
+    // 3. Save message and update lastMessage
     await chatRef.collection('messages').add(message);
     
-    await chatRef.update({ lastMessage: { text, senderId, timestamp: message.timestamp, readBy: [senderId], } });
+    await chatRef.update({ 
+        lastMessage: { 
+            text: lastMessageText,
+            senderId, 
+            timestamp: message.timestamp, 
+            readBy: [senderId], 
+        } 
+    });
 
-    
+    // 4. Send notification
     const participants = chatDoc.data().participants || [];
     const recipientId = participants.find(id => id !== senderId);
 
@@ -87,11 +133,10 @@ const sendMessage = async (req, res) => {
 
       await createNotification(
         recipientId,
-        `${senderName} sent you a new message.`,
-        `/chat/${chatId}` // Link to the chat
+        `${senderName}: ${lastMessageText}`, // Use summary text in notification
+        `/chat/${chatId}` // Assumes /chat/:id route exists
       );
     }
-    
 
     res.status(201).json({ message: 'Message sent successfully.' });
   } catch (error) {
@@ -107,6 +152,7 @@ const markChatAsRead = async (req, res) => {
 
         const chatRef = db.collection('chats').doc(chatId);
         
+        // Use arrayUnion to safely add the user's ID to the readBy array
         await chatRef.update({
             'lastMessage.readBy': admin.firestore.FieldValue.arrayUnion(userId)
         });

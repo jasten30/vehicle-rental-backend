@@ -39,10 +39,11 @@ const register = async (req, res) => {
       passwordHash: await hashPassword(password),
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       emailVerified: false,
-      // UPDATED: Set to true on registration to match Firebase Auth's state
-      isMobileVerified: true,
+      isMobileVerified: true, // Assuming this is your intended logic
+      favorites: [], // 👈 ADDED: Initialize empty favorites array
+      isBlocked: false, // 👈 ADDED: Initialize block status
     });
-    
+
     const customToken = await admin.auth().createCustomToken(userRecord.uid);
 
     res.status(201).json({
@@ -82,7 +83,16 @@ const login = async (req, res) => {
       log(`Firestore user document not found for UID: ${userRecord.uid}`);
       return res.status(404).json({ message: 'User data not found.' });
     }
+
     const userData = userDoc.data();
+
+    // 👇 ADDED: Block check
+    if (userData.isBlocked === true) {
+        log(`Login failed: User ${userRecord.uid} is blocked.`);
+        return res.status(403).json({ message: 'Your account has been restricted. Please contact support.' });
+    }
+    // --- END BLOCK CHECK ---
+
     const storedPasswordHash = userData.passwordHash;
     if (!storedPasswordHash) {
       log(`No password hash found in Firestore for UID: ${userRecord.uid}.`);
@@ -108,6 +118,7 @@ const login = async (req, res) => {
         email: userRecord.email,
         role: userData.role,
         displayName: userData.displayName || null,
+        favorites: userData.favorites || [], // 👈 ADDED: Send favorites list
       },
     });
   } catch (error) {
@@ -135,6 +146,14 @@ const tokenLogin = async (req, res) => {
     }
     
     const userData = userDoc.data();
+
+    // 👇 ADDED: Block check (optional, but good for token re-auth)
+    if (userData.isBlocked === true) {
+        log(`Token login failed: User ${uid} is blocked.`);
+        return res.status(403).json({ message: 'Your account has been restricted.' });
+    }
+    // --- END BLOCK CHECK ---
+    
     const customToken = await admin.auth().createCustomToken(uid, { role: userData.role });
     
     log(`Custom token created for UID: ${uid}`);

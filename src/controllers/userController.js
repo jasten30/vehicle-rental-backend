@@ -19,6 +19,7 @@ const uploadBase64Image = async (base64String, folderName) => {
   return `https://storage.googleapis.com/${storageBucket.name}/${fileName}`;
 };
 
+// CHANGED: from exports.createUserProfile to const createUserProfile
 const createUserProfile = async (req, res) => {
   try {
     const userId = req.customUser.uid;
@@ -38,12 +39,15 @@ const createUserProfile = async (req, res) => {
       role: 'renter',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       emailVerified: req.customUser.email_verified || false,
+      // Add the new fields on creation
+      favorites: [],
+      isBlocked: false,
     };
 
     if (email) newUserProfile.email = email;
     if (phone_number) newUserProfile.phoneNumber = phone_number;
 
-    await userDocRef.set(newUserProfile);
+    await userDocRef.set(newUserProfile, { merge: true }); // Use merge just in case
     res.status(201).json({ message: 'User profile created successfully.', user: newUserProfile });
   } catch (error) {
     console.error('Error creating user profile:', error);
@@ -51,6 +55,7 @@ const createUserProfile = async (req, res) => {
   }
 };
 
+// CHANGED: from exports.getUserProfile to const getUserProfile
 const getUserProfile = async (req, res) => {
   try {
     const userId = req.customUser.uid;
@@ -76,6 +81,8 @@ const getUserProfile = async (req, res) => {
       emailVerified: userData.emailVerified || false,
       createdAt: userData.createdAt || null,
       monthlyBookingCounts: userData.monthlyBookingCounts || {},
+      favorites: userData.favorites || [], // 👈 UPDATED: Added favorites
+      isBlocked: userData.isBlocked || false, // 👈 UPDATED: Added isBlocked
     };
     res.status(200).json(profile);
   } catch (error) {
@@ -84,12 +91,14 @@ const getUserProfile = async (req, res) => {
   }
 };
 
+// CHANGED: from exports.updateUserProfile to const updateUserProfile
 const updateUserProfile = async (req, res) => {
   try {
     const userId = req.customUser.uid;
-    const updates = req.body;
+    const updates = req.body; // This will contain editableProfile
     const userDocRef = db.collection('users').doc(userId);
 
+    // --- HANDLE IMAGE UPLOADS ---
     if (updates.bannerImageBase64) {
       const bannerUrl = await uploadBase64Image(updates.bannerImageBase64, 'user_banners');
       if (bannerUrl) {
@@ -97,6 +106,18 @@ const updateUserProfile = async (req, res) => {
       }
       delete updates.bannerImageBase64;
     }
+
+    // 👇 UPDATED: Handle Profile Photo Upload from modal
+    if (updates.profilePhotoBase64) {
+        const photoUrl = await uploadBase64Image(updates.profilePhotoBase64, 'user_photos');
+        if (photoUrl) {
+            updates.profilePhotoUrl = photoUrl; // Set the new URL
+        }
+        delete updates.profilePhotoBase64; // Remove base64 data
+    }
+    // If profilePhotoUrl is explicitly set to null (from removeImage), it will be handled below
+    // --- END IMAGE UPLOADS ---
+
 
     if (updates.email && updates.email !== req.customUser.email) {
       try {
@@ -110,21 +131,24 @@ const updateUserProfile = async (req, res) => {
       }
     }
     
+    // Whitelist the fields that can be updated from the modal
     const allowedUpdates = {};
     if (updates.firstName !== undefined) allowedUpdates.firstName = updates.firstName;
     if (updates.lastName !== undefined) allowedUpdates.lastName = updates.lastName;
-    if (updates.phoneNumber !== undefined) allowedUpdates.phoneNumber = updates.phoneNumber;
+    if (updates.phoneNumber !== undefined) allowedUpdates.phoneNumber = updates.phoneNumber; // Keep just in case
     if (updates.address !== undefined) allowedUpdates.address = updates.address;
     if (updates.about !== undefined) allowedUpdates.about = updates.about;
     if (updates.bannerImageUrl !== undefined) allowedUpdates.bannerImageUrl = updates.bannerImageUrl;
-    if (updates.isMobileVerified !== undefined) allowedUpdates.isMobileVerified = updates.isMobileVerified;
+    if (updates.isMobileVerified !== undefined) allowedUpdates.isMobileVerified = updates.isMobileVerified; // Keep just in case
     if (updates.email !== undefined) allowedUpdates.email = updates.email;
     if (updates.emailVerified !== undefined) allowedUpdates.emailVerified = updates.emailVerified;
+    if (updates.profilePhotoUrl !== undefined) allowedUpdates.profilePhotoUrl = updates.profilePhotoUrl; // 👈 ADDED: Allow this
 
     if (Object.keys(allowedUpdates).length === 0) {
       return res.status(400).json({ message: 'No valid fields provided for update.' });
     }
 
+    // Update name field if first/last name changes
     if (allowedUpdates.firstName || allowedUpdates.lastName) {
       const currentUserDoc = await userDocRef.get();
       const currentData = currentUserDoc.exists ? currentUserDoc.data() : {};
@@ -142,11 +166,11 @@ const updateUserProfile = async (req, res) => {
   }
 };
 
+// CHANGED: from exports.deleteUser to const deleteUser
 const deleteUser = async (req, res) => {
   try {
     const { userId } = req.params;
 
-    // Find and delete all vehicles owned by the user
     const vehiclesRef = db.collection('vehicles');
     const snapshot = await vehiclesRef.where('ownerId', '==', userId).get();
 
@@ -182,6 +206,7 @@ const deleteUser = async (req, res) => {
   }
 };
 
+// CHANGED: from exports.submitDriveApplication to const submitDriveApplication
 const submitDriveApplication = async (req, res) => {
     try {
         const userId = req.customUser.uid;
@@ -217,6 +242,7 @@ const submitDriveApplication = async (req, res) => {
     }
 };
 
+// CHANGED: from exports.submitHostApplication to const submitHostApplication
 const submitHostApplication = async (req, res) => {
   try {
     const userId = req.customUser.uid;
@@ -238,6 +264,7 @@ const submitHostApplication = async (req, res) => {
   }
 };
 
+// CHANGED: from exports.getAllUsers to const getAllUsers
 const getAllUsers = async (req, res) => {
   try {
     const usersSnapshot = await db.collection('users').get();
@@ -252,6 +279,7 @@ const getAllUsers = async (req, res) => {
         role: userData.role || 'renter',
         listingCount: listingCount,
         createdAt: userData.createdAt,
+        isBlocked: userData.isBlocked || false,
       };
     });
     const allUsers = await Promise.all(userPromises);
@@ -262,6 +290,7 @@ const getAllUsers = async (req, res) => {
   }
 };
 
+// CHANGED: from exports.updateUserRoleByAdmin to const updateUserRoleByAdmin
 const updateUserRoleByAdmin = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -278,6 +307,7 @@ const updateUserRoleByAdmin = async (req, res) => {
   }
 };
 
+// CHANGED: from exports.sendEmailVerificationCode to const sendEmailVerificationCode
 const sendEmailVerificationCode = async (req, res) => {
   try {
     const { uid } = req.customUser;
@@ -308,6 +338,7 @@ const sendEmailVerificationCode = async (req, res) => {
   }
 };
 
+// CHANGED: from exports.verifyEmailCode to const verifyEmailCode
 const verifyEmailCode = async (req, res) => {
   try {
     const { uid } = req.customUser;
@@ -340,6 +371,7 @@ const verifyEmailCode = async (req, res) => {
   }
 };
 
+// CHANGED: from exports.getAllHostApplications to const getAllHostApplications
 const getAllHostApplications = async (req, res) => {
   try {
     const snapshot = await db.collection('hostApplications').where('status', '==', 'pending').get();
@@ -353,6 +385,7 @@ const getAllHostApplications = async (req, res) => {
   }
 };
 
+// CHANGED: from exports.approveHostApplication to const approveHostApplication
 const approveHostApplication = async (req, res) => {
   try {
     const { applicationId, userId } = req.body;
@@ -371,6 +404,7 @@ const approveHostApplication = async (req, res) => {
   }
 };
 
+// CHANGED: from exports.declineHostApplication to const declineHostApplication
 const declineHostApplication = async (req, res) => {
   try {
     const { applicationId } = req.body;
@@ -381,6 +415,89 @@ const declineHostApplication = async (req, res) => {
   } catch (error) {
     console.error('Error declining host application:', error);
     res.status(500).json({ message: 'Failed to decline application.' });
+  }
+};
+
+// CHANGED: from exports.toggleFavoriteVehicle to const toggleFavoriteVehicle
+const toggleFavoriteVehicle = async (req, res) => {
+    const { vehicleId } = req.body;
+    const userId = req.customUser.uid; // From authMiddleware
+
+    if (!vehicleId) {
+        return res.status(400).json({ message: 'Vehicle ID is required.' });
+    }
+
+    const userRef = db.collection('users').doc(userId);
+
+    try {
+        let newFavorites = [];
+        const userDoc = await userRef.get();
+
+        if (!userDoc.exists) {
+            return res.status(404).json({ message: 'User not found.' });
+        }
+
+        const userData = userDoc.data();
+        const currentFavorites = userData.favorites || [];
+
+        if (currentFavorites.includes(vehicleId)) {
+            // Remove from favorites (unfavorite)
+            newFavorites = currentFavorites.filter(id => id !== vehicleId);
+            await userRef.update({ favorites: newFavorites });
+        } else {
+            // Add to favorites (favorite)
+            newFavorites = [...currentFavorites, vehicleId];
+            await userRef.update({ favorites: newFavorites });
+        }
+
+        // Return the new, updated list of favorites
+        res.status(200).json({ favorites: newFavorites });
+
+    } catch (error) {
+        console.error(`Error toggling favorite for user ${userId}:`, error);
+        res.status(500).json({ message: 'Server error while updating favorites.' });
+    }
+};
+
+// CHANGED: from exports.updateUserBlockStatus to const updateUserBlockStatus
+const updateUserBlockStatus = async (req, res) => {
+  try {
+    const { userId } = req.params; // Get user ID from URL
+    const { isBlocked } = req.body; // Get { isBlocked: true/false } from body
+    const adminUserId = req.customUser.uid; // Get admin's ID for logging
+
+    if (typeof isBlocked !== 'boolean') {
+      return res.status(400).json({ message: 'Invalid "isBlocked" value. Must be true or false.' });
+    }
+
+    // Optional: Prevent admin from blocking themselves
+    if (userId === adminUserId) {
+        return res.status(400).json({ message: 'Admin cannot block themselves.' });
+    }
+
+    const userRef = db.collection('users').doc(userId);
+    await userRef.update({
+      isBlocked: isBlocked,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    // Optional: Force logout the blocked user
+    if (isBlocked) {
+        try {
+            await admin.auth().revokeRefreshTokens(userId);
+            log(`Revoked refresh tokens for blocked user ${userId}.`);
+        } catch (revokeError) {
+             console.error(`Failed to revoke refresh tokens for user ${userId}:`, revokeError.message);
+             // Don't fail the whole request, just log this
+        }
+    }
+
+    log(`Admin ${adminUserId} ${isBlocked ? 'blocked' : 'unblocked'} user ${userId}.`);
+    res.status(200).json({ message: `User ${isBlocked ? 'blocked' : 'unblocked'} successfully.` });
+
+  } catch (error) {
+    console.error(`Error updating user block status for ${req.params.userId}:`, error);
+    res.status(500).json({ message: 'Server error updating user status.' });
   }
 };
 
@@ -399,5 +516,7 @@ module.exports = {
   getAllHostApplications,
   approveHostApplication,
   declineHostApplication,
+  toggleFavoriteVehicle,
+  updateUserBlockStatus,
 };
 

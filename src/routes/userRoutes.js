@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const userController = require('../controllers/userController');
+const authMiddleware = require('../middleware/authMiddleware');
 const { verifyToken, authorizeRole } = require('../middleware/authMiddleware');
 
 // Protected routes (require valid token)
@@ -71,6 +72,13 @@ router.put(
   verifyToken,
   authorizeRole(['admin']),
   userController.declineHostApplication
+);
+
+// Route to add/remove a favorite vehicle
+router.post(
+  '/me/favorites/toggle', 
+  authMiddleware.verifyToken, 
+  userController.toggleFavoriteVehicle
 );
 
 module.exports = router;

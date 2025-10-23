@@ -126,4 +126,18 @@ router.post(
   bookingController.confirmExtensionPayment
 );
 
+router.post(
+  '/:bookingId/defer-extension',
+  authMiddleware.verifyToken,
+  authMiddleware.authorizeRole(['renter']),
+  bookingController.deferExtensionPayment
+);
+
+router.get(
+  '/:bookingId/contract',
+  authMiddleware.verifyToken,
+  authMiddleware.authorizeRole(['owner', 'admin']), 
+  bookingController.generateBookingContract
+);
+
 module.exports = router;

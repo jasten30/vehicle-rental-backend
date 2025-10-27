@@ -1,4 +1,4 @@
-const { admin, db } = require('../utils/firebase');
+const { admin, db, storageBucket } = require('../utils/firebase');
 const { createNotification } = require('../utils/notificationHelper'); 
 const { DateTime } = require('luxon');
 
@@ -19,6 +19,30 @@ const convertToDate = (value) => {
   }
   return null;
 };
+
+// ================================================
+//  NEW HELPER FUNCTION
+// ================================================
+/**
+ * Extracts key user details from a user document snapshot.
+ * @param {admin.firestore.DocumentSnapshot} userDoc - The Firestore user document.
+ * @returns {object | null} A clean object with user details or null.
+ */
+const extractUserDetails = (userDoc) => {
+  if (!userDoc || !userDoc.exists) {
+    return { name: 'Unknown User', email: 'N/A', profilePhotoUrl: null };
+  }
+  const userData = userDoc.data();
+  return {
+    uid: userDoc.id,
+    name: `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || 'User',
+    email: userData.email || 'N/A',
+    profilePhotoUrl: userData.profilePhotoUrl || null, // <-- Ensures this field is included
+    payoutDetails: userData.payoutDetails || null // Include payout details for owner
+  };
+};
+// ================================================
+
 
 const getAllBookings = async (req, res) => {
   try {
@@ -51,18 +75,18 @@ const getAllBookings = async (req, res) => {
     const [vehicleDocs, renterDocs] = await Promise.all([Promise.all(vehiclePromises), Promise.all(renterPromises)]);
 
     const vehiclesMap = new Map(vehicleDocs.map(doc => doc.exists ? [doc.id, doc.data()] : null).filter(Boolean));
-    const rentersMap = new Map(renterDocs.map(doc => doc.exists ? [doc.id, doc.data()] : null).filter(Boolean));
+    const rentersMap = new Map(renterDocs.map(doc => doc.exists ? [doc.id, extractUserDetails(doc)] : null).filter(Boolean)); // Use helper
 
     const enrichedBookings = bookingsData.map((booking) => {
       const vehicle = vehiclesMap.get(booking.vehicleId);
-      const renter = rentersMap.get(booking.renterId);
+      const renter = rentersMap.get(booking.renterId); // Renter object now has profilePhotoUrl
       return {
         ...booking,
         startDate: convertToDate(booking.startDate)?.toISOString() || null,
         endDate: convertToDate(booking.endDate)?.toISOString() || null,
         createdAt: convertToDate(booking.createdAt)?.toISOString() || null,
         vehicleName: vehicle ? `${vehicle.make} ${vehicle.model}` : 'Unknown Vehicle',
-        renterEmail: renter ? renter.email : 'Unknown Renter',
+        renterDetails: renter, // <-- UPDATED
       };
     });
 
@@ -75,14 +99,13 @@ const getAllBookings = async (req, res) => {
 
 const createBooking = async (req, res) => {
   try {
-    const { vehicleId, startDate, endDate } = req.body; // Removed totalCost from body destructuring
+    const { vehicleId, startDate, endDate } = req.body;
     const renterId = req.customUser.uid;
 
     if (!vehicleId || !startDate || !endDate) {
       return res.status(400).json({ message: 'Missing required booking fields (vehicleId, startDate, endDate).' });
     }
 
-    // 1. Validate and Parse Dates
     const start = convertToDate(startDate);
     const end = convertToDate(endDate);
 
@@ -90,7 +113,6 @@ const createBooking = async (req, res) => {
       return res.status(400).json({ message: 'Invalid start or end date/time.' });
     }
 
-    // 2. Fetch Vehicle and Verify Rate
     const vehicleRef = db.collection('vehicles').doc(vehicleId);
     const vehicleDoc = await vehicleRef.get();
     if (!vehicleDoc.exists) {
@@ -104,18 +126,15 @@ const createBooking = async (req, res) => {
       return res.status(500).json({ message: 'Vehicle rental price is invalid or not set. Cannot create booking.' });
     }
 
-    // 3. Recalculate Cost on Backend (Security Measure)
     const diffMilliseconds = end.getTime() - start.getTime();
     const diffHours = diffMilliseconds / (1000 * 60 * 60);
     const calculatedDays = Math.ceil(diffHours / 24);
     const billableDays = calculatedDays > 0 ? calculatedDays : 1;
     const backendTotalCost = parseFloat((rentalPricePerDay * billableDays).toFixed(2));
 
-    // 4. Calculate Downpayment and Balance
     const downPayment = parseFloat((backendTotalCost * 0.20).toFixed(2));
     const remainingBalance = parseFloat((backendTotalCost - downPayment).toFixed(2));
 
-    // 5. Prepare Booking Data
     const newBooking = {
       vehicleId,
       renterId,
@@ -128,15 +147,13 @@ const createBooking = async (req, res) => {
       amountPaid: 0,
       paymentStatus: 'pending_owner_approval',
       isReminderSent: false,
-      extensions: [], // Initialize extensions array
+      extensions: [],
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     };
 
-    // 6. Save Booking
     const docRef = await db.collection('bookings').add(newBooking);
 
-    // 7. Send Notification
     await createNotification(
       ownerId,
       `You have a new booking request for your ${vehicleData.make || 'vehicle'}.`,
@@ -257,7 +274,7 @@ const getBookingsByUser = async (req, res) => {
         startDate: convertToDate(bookingData.startDate)?.toISOString() || null,
         endDate: convertToDate(bookingData.endDate)?.toISOString() || null,
         createdAt: convertToDate(bookingData.createdAt)?.toISOString() || null,
-        renterDetails: renterDoc.exists ? { id: renterDoc.id, ...renterDoc.data() } : null,
+        renterDetails: extractUserDetails(renterDoc), // <-- UPDATED
         vehicleDetails: vehicleDoc.exists ? { id: vehicleDoc.id, ...vehicleDoc.data() } : null,
       };
     }));
@@ -314,12 +331,10 @@ const getBookingById = async (req, res) => {
     
     const vehicleData = vehicleDoc.exists ? vehicleDoc.data() : null;
     
-    // 👇 THIS IS THE FIX: Fetch the full owner data object
-    let ownerData = null;
+    // Fetch the full owner data object
+    let ownerDoc = null;
     if (vehicleData && vehicleData.ownerId) {
-        const ownerDoc = await db.collection('users').doc(vehicleData.ownerId).get();
-        // Get the full data object, which includes payoutDetails
-        ownerData = ownerDoc.exists ? ownerDoc.data() : null; 
+        ownerDoc = await db.collection('users').doc(vehicleData.ownerId).get();
     }
     
     const requesterId = req.customUser.uid;
@@ -335,10 +350,9 @@ const getBookingById = async (req, res) => {
       endDate: convertToDate(bookingData.endDate)?.toISOString() || null,
       createdAt: convertToDate(bookingData.createdAt)?.toISOString() || null,
       vehicleDetails: vehicleData,
-      // Send simplified renter details
-      renterDetails: renterDoc.exists ? { name: `${renterDoc.data().firstName} ${renterDoc.data().lastName}`, email: renterDoc.data().email } : null,
-      // 👇 SEND THE FULL OWNER DATA OBJECT
-      ownerDetails: ownerData, 
+      // --- UPDATED: Use helper function for both ---
+      renterDetails: extractUserDetails(renterDoc),
+      ownerDetails: extractUserDetails(ownerDoc), 
     });
   } catch (error) {
     console.error(`Error fetching booking by ID ${req.params.bookingId}:`, error);
@@ -612,7 +626,8 @@ const getOwnerBookings = async (req, res) => {
         const rentersMap = new Map();
         renterDocs.forEach(doc => {
             if (doc.exists) {
-                rentersMap.set(doc.id, doc.data());
+                // --- UPDATED: Use helper function ---
+                rentersMap.set(doc.id, extractUserDetails(doc));
             }
         });
 
@@ -621,7 +636,7 @@ const getOwnerBookings = async (req, res) => {
                 ...booking,
                 startDate: convertToDate(booking.startDate)?.toISOString() || null,
                 endDate: convertToDate(booking.endDate)?.toISOString() || null,
-                renterDetails: rentersMap.get(booking.renterId) || { username: 'N/A' },
+                renterDetails: rentersMap.get(booking.renterId) || { name: 'N/A' }, // <-- UPDATED
                 vehicleDetails: vehiclesMap.get(booking.vehicleId) || { make: 'Unknown', model: 'Vehicle' },
             };
         });
@@ -686,7 +701,7 @@ const updateBookingStatus = async (req, res) => {
 
     if (userRole !== 'admin' && userId !== bookingData.ownerId) {
         console.warn(`[BookingController] updateBookingStatus unauthorized attempt by user ${userId} (role: ${userRole}) on booking ${bookingId} owned by ${bookingData.ownerId}.`);
-        return res.status(403).json({ message: 'Forbidden: You are not authorized to update this booking status.' }); // 👈 TYPO FIXED
+        return res.status(403).json({ message: 'Forbidden: You are not authorized to update this booking status.' });
     }
 
     await bookingRef.update({
@@ -838,14 +853,10 @@ const submitBookingReport = async (req, res) => {
     }
 };
 
-// -----------------------------------------------------------------------------
-// --- UPDATED FUNCTIONS FOR MULTIPLE EXTENSIONS ---
-// -----------------------------------------------------------------------------
+// ... (requestBookingExtension, confirmExtensionPayment, deferExtensionPayment) ...
+// (These functions seem correct and don't need profile pic logic)
+// ...
 
-/**
- * Renter requests a time extension.
- * This checks availability and adds a new item to the 'extensions' array.
- */
 const requestBookingExtension = async (req, res) => {
     try {
         const { bookingId } = req.params;
@@ -865,7 +876,6 @@ const requestBookingExtension = async (req, res) => {
         }
         const bookingData = bookingDoc.data();
 
-        // --- 1. Validation ---
         if (bookingData.renterId !== renterId) {
             return res.status(403).json({ message: 'Forbidden: You cannot extend this booking.' });
         }
@@ -873,7 +883,6 @@ const requestBookingExtension = async (req, res) => {
              return res.status(400).json({ message: `Booking cannot be extended in its current state (${bookingData.paymentStatus}). Only 'Confirmed' bookings can be extended.` });
         }
 
-        // --- 2. Calculate New End Date & Fetch Vehicle ---
         const currentEndDate = convertToDate(bookingData.endDate); 
         if (!currentEndDate) {
              throw new Error("Could not parse current booking end date.");
@@ -891,7 +900,6 @@ const requestBookingExtension = async (req, res) => {
             return res.status(500).json({ message: 'Vehicle rental price is invalid.' });
         }
 
-        // --- 3. Check Availability for *New* Extended Period ---
         const extendedStartCheck = DateTime.fromJSDate(currentEndDate).plus({ minutes: 1 }).toJSDate();
         const extendedEndCheck = newEndDate;
 
@@ -922,13 +930,11 @@ const requestBookingExtension = async (req, res) => {
              return res.status(409).json({ message: 'Vehicle is booked by someone else during the requested extension period.' });
         }
 
-        // --- 4. Calculate Extension Cost ---
         const hourlyRate = rentalPricePerDay / 24;
         const extensionCost = parseFloat((hourlyRate * hours).toFixed(2));
 
-        // --- 5. Create new extension object and add to array ---
         const newExtension = {
-            requestedAt: new Date(), // 👈 FIX: Use new Date()
+            requestedAt: new Date(),
             hours: hours,
             cost: extensionCost,
             newEndDate: admin.firestore.Timestamp.fromDate(newEndDate),
@@ -941,7 +947,6 @@ const requestBookingExtension = async (req, res) => {
              updatedAt: admin.firestore.FieldValue.serverTimestamp()
          });
 
-        // --- 6. Notify Owner ---
         await createNotification(
             bookingData.ownerId,
             `Renter requested a ${hours}-hour extension for booking #${bookingId.substring(0,5)}. Cost: ₱${extensionCost.toFixed(2)}.`,
@@ -961,9 +966,6 @@ const requestBookingExtension = async (req, res) => {
     }
 };
 
-/**
- * Renter confirms payment for the *latest pending* extension (QR/Online)
- */
 const confirmExtensionPayment = async (req, res) => {
     try {
         const { bookingId } = req.params;
@@ -982,7 +984,6 @@ const confirmExtensionPayment = async (req, res) => {
         const bookingData = bookingDoc.data();
         const currentExtensions = bookingData.extensions || [];
 
-        // --- 1. Validations ---
         if (bookingData.renterId !== renterId) {
             return res.status(403).json({ message: 'You are not authorized to confirm this payment.' });
         }
@@ -1005,13 +1006,11 @@ const confirmExtensionPayment = async (req, res) => {
         
         const costToApply = expectedCost; 
 
-        // --- 2. All checks passed. Update the booking. ---
-        
         currentExtensions[pendingExtensionIndex] = {
             ...pendingExtension,
             status: 'paid',
             paymentReferenceNumber: referenceNumber,
-            paidAt: new Date() // 👈 FIX: Use new Date()
+            paidAt: new Date()
         };
 
         await bookingRef.update({
@@ -1023,7 +1022,6 @@ const confirmExtensionPayment = async (req, res) => {
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
 
-        // --- 3. Notify Owner ---
         await createNotification(
             bookingData.ownerId,
             `Renter paid the ₱${costToApply.toFixed(2)} extension fee for booking #${bookingId.substring(0,5)}. The trip is now extended.`,
@@ -1039,9 +1037,6 @@ const confirmExtensionPayment = async (req, res) => {
     }
 };
 
-/**
- * Renter confirms they will pay for the *latest pending* extension in cash on return.
- */
 const deferExtensionPayment = async (req, res) => {
     try {
         const { bookingId } = req.params;
@@ -1056,7 +1051,6 @@ const deferExtensionPayment = async (req, res) => {
         const bookingData = bookingDoc.data();
         const currentExtensions = bookingData.extensions || [];
 
-        // --- 1. Validations ---
         if (bookingData.renterId !== renterId) {
             return res.status(403).json({ message: 'You are not authorized to update this booking.' });
         }
@@ -1079,7 +1073,6 @@ const deferExtensionPayment = async (req, res) => {
         
         const costToApply = expectedCost;
 
-        // --- 2. All checks passed. Update the booking. ---
         currentExtensions[pendingExtensionIndex] = {
             ...pendingExtension,
             status: 'pay_on_return',
@@ -1095,7 +1088,6 @@ const deferExtensionPayment = async (req, res) => {
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
 
-        // --- 3. Notify Owner ---
         await createNotification(
             bookingData.ownerId,
             `Renter extended booking #${bookingId.substring(0,5)}. They will pay the ₱${costToApply.toFixed(2)} fee in cash upon return.`,
@@ -1116,30 +1108,27 @@ const generateBookingContract = async (req, res) => {
     const { bookingId } = req.params;
     const userId = req.customUser.uid;
     
-    // 1. Fetch all required data
     const bookingDoc = await db.collection('bookings').doc(bookingId).get();
     if (!bookingDoc.exists) {
         return res.status(404).json({ message: "Booking not found" });
     }
     const booking = bookingDoc.data();
     
-    // 2. Authorization check
     if (req.customUser.role !== 'admin' && userId !== booking.ownerId && userId !== booking.renterId) { 
         return res.status(403).json({ message: "Forbidden: You are not authorized to download this contract." });
     }
     
-    // 3. Fetch related data in parallel
     const [ownerDoc, renterDoc, vehicleDoc] = await Promise.all([
         db.collection('users').doc(booking.ownerId).get(),
         db.collection('users').doc(booking.renterId).get(),
         db.collection('vehicles').doc(booking.vehicleId).get()
     ]);
     
-    const owner = ownerDoc.exists ? ownerDoc.data() : { name: 'N/A', email: 'N/A' };
-    const renter = renterDoc.exists ? renterDoc.data() : { name: 'N/A', email: 'N/A' };
+    // --- UPDATED: Use helper function ---
+    const owner = extractUserDetails(ownerDoc);
+    const renter = extractUserDetails(renterDoc);
     const vehicle = vehicleDoc.exists ? vehicleDoc.data() : { make: 'N/A', model: 'N/A', year: 'N/A', plateNumber: 'N/A', vin: 'N/A' };
     
-    // 4. Construct Contract Text
     const startDate = convertToDate(booking.startDate)?.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' }) || 'N/A';
     const endDate = convertToDate(booking.endDate)?.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' }) || 'N/A';
     
@@ -1153,14 +1142,14 @@ const generateBookingContract = async (req, res) => {
     if (booking.extensions && booking.extensions.length > 0) {
         booking.extensions.forEach((ext, index) => {
             extensionsText += `Extension ${index + 1}:\n`;
-            extensionsText += `  Hours: ${ext.hours}\n`;
-            extensionsText += `  Cost: ₱${ext.cost.toFixed(2)}\n`;
-            // 👈 FIX: Handle serialized timestamp object from array
-            const extEndDate = ext.newEndDate.toDate ? ext.newEndDate.toDate() : new Date(ext.newEndDate._seconds * 1000);
-            extensionsText += `  New Return Date: ${extEndDate?.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' }) || 'N/A'}\n`;
-            extensionsText += `  Payment Status: ${ext.status}\n`;
-            if(ext.paymentReferenceNumber) extensionsText += `  Reference: ${ext.paymentReferenceNumber}\n`;
-            if(ext.paymentMethod) extensionsText += `  Payment Method: ${ext.paymentMethod}\n`;
+            extensionsText += `   Hours: ${ext.hours}\n`;
+            extensionsText += `   Cost: ₱${ext.cost.toFixed(2)}\n`;
+            // Handle both Timestamp and serialized Timestamp
+            const extEndDate = ext.newEndDate?.toDate ? ext.newEndDate.toDate() : (ext.newEndDate?._seconds ? new Date(ext.newEndDate._seconds * 1000) : null);
+            extensionsText += `   New Return Date: ${extEndDate?.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' }) || 'N/A'}\n`;
+            extensionsText += `   Payment Status: ${ext.status}\n`;
+            if(ext.paymentReferenceNumber) extensionsText += `   Reference: ${ext.paymentReferenceNumber}\n`;
+            if(ext.paymentMethod) extensionsText += `   Payment Method: ${ext.paymentMethod}\n`;
             extensionsText += '\n';
         });
     } else {
@@ -1178,19 +1167,19 @@ This document confirms the agreement between the Host (Owner) and the Renter for
 --- PARTIES ---
 
 HOST (OWNER):
-Name: ${owner.name || `${owner.firstName || ''} ${owner.lastName || ''}`}
+Name: ${owner.name}
 Email: ${owner.email}
 User ID: ${booking.ownerId}
 
 RENTER:
-Name: ${renter.name || `${renter.firstName || ''} ${renter.lastName || ''}`}
+Name: ${renter.name}
 Email: ${renter.email}
 User ID: ${booking.renterId}
 
 --- VEHICLE ---
 
 Vehicle: ${vehicle.make} ${vehicle.model} (${vehicle.year})
-Plate Number: ${vehicle.plateNumber || 'N/A'}
+Plate Number: ${vehicle.cor?.plateNumber || vehicle.plateNumber || 'N/A'}
 VIN: ${vehicle.vin || 'N/A'}
 
 --- RENTAL PERIOD ---
@@ -1224,7 +1213,6 @@ Renter: _________________________________
 Date: ____________________
 `;
     
-    // 5. Send as a downloadable file
     const filename = `BookingContract-${bookingId}.txt`;
     res.setHeader('Content-Type', 'text/plain');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
@@ -1260,4 +1248,3 @@ module.exports = {
   deferExtensionPayment,
   generateBookingContract
 };
-

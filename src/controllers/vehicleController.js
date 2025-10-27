@@ -11,7 +11,7 @@ const uploadBase64Image = async (base64String, folderName = 'vehicle_images') =>
   }
   const matches = base64String.match(/^data:(image\/[a-z]+);base64,(.+)$/);
   if (!matches || matches.length !== 3) {
-    console.error('Invalid Base64 image string format detected.'); // Keep essential error log
+    console.error('Invalid Base64 image string format detected.');
     return null;
   }
   const contentType = matches[1];
@@ -29,9 +29,28 @@ const uploadBase64Image = async (base64String, folderName = 'vehicle_images') =>
     });
     return file.publicUrl();
   } catch (uploadError) {
-    console.error(`[VehicleController] Error uploading image to ${fileName}:`, uploadError); // Keep essential error log
+    console.error(`[VehicleController] Error uploading image to ${fileName}:`, uploadError);
     return null;
   }
+};
+
+/**
+ * Helper function to extract the storage path from a public Google URL.
+ * e.g., https://storage.googleapis.com/bucket-name/o/vehicles%2F... -> vehicles/...
+ */
+const extractStoragePath = (url) => {
+    if (!url || !url.includes(storageBucket.name)) return null;
+    try {
+        const urlParts = new URL(url);
+        const prefix = `/b/${storageBucket.name}/o/`;
+        if (urlParts.pathname.startsWith(prefix)) {
+            // Get path after /o/ and decode it (e.g., %2F becomes /)
+            return decodeURIComponent(urlParts.pathname.substring(prefix.length).split('?')[0]);
+        }
+    } catch(e){ 
+        console.error("Error extracting path from URL:", url, e)
+    }
+    return null;
 };
 
 
@@ -40,40 +59,35 @@ const uploadBase64Image = async (base64String, folderName = 'vehicle_images') =>
  */
 const geocodeLocation = async (location) => {
   if (!location || !location.city || !location.country) {
-    // console.log('[VehicleController] Geocoding skipped: Missing city or country.'); // Removed debug log
     return null;
   }
   let query = `${location.barangay || ''}, ${location.city}, ${location.region || ''}, ${location.country}`.replace(/ ,/g, ',');
-  // console.log(`[VehicleController] Geocoding attempt 1 with query: "${query}"`); // Removed debug log
   try {
     const response = await axios.get('https://nominatim.openstreetmap.org/search', {
       params: { q: query, format: 'json', limit: 1 },
       headers: { 'User-Agent': 'Car-Rental-App/1.0 (Development)' },
     });
     if (response.data && response.data.length > 0) {
-      // console.log(`[VehicleController] Geocoding success (attempt 1): lat=${response.data[0].lat}, lon=${response.data[0].lon}`); // Removed debug log
       return { lat: parseFloat(response.data[0].lat), lon: parseFloat(response.data[0].lon) };
     }
   } catch (error) {
-    console.error(`[VehicleController] Geocoding error (attempt 1) for query "${query}":`, error.message); // Keep error log
+    console.error(`[VehicleController] Geocoding error (attempt 1) for query "${query}":`, error.message);
   }
 
   query = `${location.city}, ${location.country}`;
-  // console.log(`[VehicleController] Geocoding attempt 2 with query: "${query}"`); // Removed debug log
   try {
     const response = await axios.get('https://nominatim.openstreetmap.org/search', {
       params: { q: query, format: 'json', limit: 1 },
       headers: { 'User-Agent': 'Car-Rental-App/1.0 (Development)' },
     });
     if (response.data && response.data.length > 0) {
-      // console.log(`[VehicleController] Geocoding success (attempt 2): lat=${response.data[0].lat}, lon=${response.data[0].lon}`); // Removed debug log
       return { lat: parseFloat(response.data[0].lat), lon: parseFloat(response.data[0].lon) };
     }
   } catch (error) {
-    console.error(`[VehicleController] Geocoding error (attempt 2) for query "${query}":`, error.message); // Keep error log
+    console.error(`[VehicleController] Geocoding error (attempt 2) for query "${query}":`, error.message);
   }
 
-  console.warn('[VehicleController] Geocoding failed for all attempts.'); // Keep warning
+  console.warn('[VehicleController] Geocoding failed for all attempts.');
   return null;
 };
 
@@ -82,11 +96,9 @@ const geocodeLocation = async (location) => {
  */
 const getAllVehicles = async (req, res) => {
   try {
-    // console.log('[VehicleController][getAllVehicles] Fetching all vehicles...'); // Removed debug log
     const vehiclesSnapshot = await db.collection('vehicles').get();
 
     if (vehiclesSnapshot.empty) {
-      // console.log('[VehicleController][getAllVehicles] No vehicles found.'); // Removed debug log
       return res.status(200).json([]);
     }
 
@@ -95,7 +107,6 @@ const getAllVehicles = async (req, res) => {
     const shouldEnrich = req.customUser?.role === 'admin';
 
     if (shouldEnrich) {
-       // console.log('[VehicleController][getAllVehicles] Enriching vehicles with owner emails.'); // Removed debug log
        const ownerIds = [...new Set(vehiclesData.map(v => v.ownerId).filter(Boolean))];
        if (ownerIds.length > 0) {
          const ownerPromises = ownerIds.map(id => db.collection('users').doc(id).get());
@@ -131,10 +142,9 @@ const getAllVehicles = async (req, res) => {
       };
     });
 
-    // console.log(`[VehicleController][getAllVehicles] Successfully fetched ${formattedVehicles.length} vehicles.`); // Removed debug log
     res.status(200).json(formattedVehicles);
   } catch (error) {
-    console.error('[VehicleController][getAllVehicles] Error fetching vehicles:', error); // Keep error log
+    console.error('[VehicleController][getAllVehicles] Error fetching vehicles:', error);
     res.status(500).json({ message: 'Error fetching vehicles.', error: error.message });
   }
 };
@@ -146,16 +156,13 @@ const getAllVehicles = async (req, res) => {
 const getVehicleById = async (req, res) => {
   try {
     const { id } = req.params;
-    // console.log(`[VehicleController][getVehicleById] Fetching vehicle by ID: ${id}`); // Removed debug log
     const vehicleDoc = await db.collection('vehicles').doc(id).get();
 
     if (!vehicleDoc.exists) {
-      // console.warn(`[VehicleController][getVehicleById] Vehicle not found for ID: ${id}`); // Removed debug log
       return res.status(404).json({ message: 'Vehicle not found.' });
     }
 
     const data = vehicleDoc.data();
-    // console.log(`[VehicleController][getVehicleById] Raw availability from Firestore for ${id}:`, JSON.stringify(data.availability)); // Removed debug log
 
     let parsedAvailability = [];
     if (data.availability && Array.isArray(data.availability)) {
@@ -167,7 +174,6 @@ const getVehicleById = async (req, res) => {
         })
         .filter(range => range !== null);
     }
-    // console.log(`[VehicleController][getVehicleById] Parsed availability being sent for ${id}:`, JSON.stringify(parsedAvailability)); // Removed debug log
 
     const vehicle = {
         id: vehicleDoc.id,
@@ -178,10 +184,9 @@ const getVehicleById = async (req, res) => {
         features: data.features || {},
     };
 
-    // console.log(`[VehicleController][getVehicleById] Successfully fetched vehicle ID: ${id}`); // Removed debug log
     res.status(200).json(vehicle);
   } catch (error) {
-    console.error(`[VehicleController][getVehicleById] Error fetching vehicle by ID ${req.params.id}:`, error); // Keep error log
+    console.error(`[VehicleController][getVehicleById] Error fetching vehicle by ID ${req.params.id}:`, error);
     res.status(500).json({ message: 'Error fetching vehicle.', error: error.message });
   }
 };
@@ -195,10 +200,9 @@ const addVehicle = async (req, res) => {
     const vehicleData = req.body;
     const ownerId = req.customUser.uid;
     const folderPath = `vehicles/${ownerId}`;
-    // console.log(`[VehicleController][addVehicle] Attempting to add vehicle for owner: ${ownerId}`); // Removed debug log
 
     if (!vehicleData.make || !vehicleData.model || !vehicleData.year) {
-      console.warn('[VehicleController][addVehicle] Add vehicle failed: Missing required fields.'); // Keep warning
+      console.warn('[VehicleController][addVehicle] Add vehicle failed: Missing required fields.');
       return res.status(400).json({ message: 'Missing required vehicle fields (make, model, year).' });
     }
 
@@ -225,6 +229,11 @@ const addVehicle = async (req, res) => {
 
     const newVehicle = {
       ownerId,
+      // --- assetType fields ---
+      assetType: cleanData.assetType || 'vehicle', 
+      motorcycleType: cleanData.motorcycleType || null,
+      engineDisplacement: cleanData.engineDisplacement ? parseInt(cleanData.engineDisplacement, 10) : null,
+      // ---
       make: cleanData.make || null,
       model: cleanData.model || null,
       year: cleanData.year ? parseInt(cleanData.year, 10) : null,
@@ -244,10 +253,9 @@ const addVehicle = async (req, res) => {
             const startDate = admin.firestore.Timestamp.fromDate(new Date(`${period.start}T00:00:00Z`));
             const endDate = admin.firestore.Timestamp.fromDate(new Date(`${period.end}T00:00:00Z`));
             if (isNaN(startDate.toDate().getTime()) || isNaN(endDate.toDate().getTime())) throw new Error('Invalid date');
-            // console.log(`[VehicleController][addVehicle] Converted period for add: Start=${startDate.toDate().toISOString()}, End=${endDate.toDate().toISOString()}`); // Removed debug log
             return { start: startDate, end: endDate };
           } catch (dateError) {
-             console.error(`[VehicleController][addVehicle] FAILED DATE CONVERSION for period:`, period, dateError); // Keep error log
+             console.error(`[VehicleController][addVehicle] FAILED DATE CONVERSION for period:`, period, dateError);
              return null;
           }
         })
@@ -264,11 +272,10 @@ const addVehicle = async (req, res) => {
     };
 
     const docRef = await db.collection('vehicles').add(newVehicle);
-    // console.log(`[VehicleController][addVehicle] Vehicle added successfully with ID: ${docRef.id}`); // Removed debug log
     res.status(201).json({ message: "Vehicle added successfully", id: docRef.id });
 
   } catch (error) {
-    console.error('[VehicleController][addVehicle] Critical error adding vehicle:', error); // Keep error log
+    console.error('[VehicleController][addVehicle] Critical error adding vehicle:', error);
     res.status(500).json({ message: 'An internal error occurred while adding the vehicle.'});
   }
 };
@@ -280,27 +287,26 @@ const addVehicle = async (req, res) => {
 const updateVehicle = async (req, res) => {
   try {
     const { id } = req.params;
-    // console.log(`[VehicleController][updateVehicle] Raw req.body received for ID ${id}:`, JSON.stringify(req.body)); // Removed debug log
     const updates = req.body.updates || req.body;
     const ownerId = req.customUser.uid;
     const folderPath = `vehicles/${ownerId}`;
-    // console.log(`[VehicleController][updateVehicle] Attempting to update vehicle ID: ${id} for owner: ${ownerId}`); // Removed debug log
-    // console.log(`[VehicleController][updateVehicle] Processing 'updates' payload:`, JSON.stringify(updates)); // Removed debug log
 
     const vehicleRef = db.collection('vehicles').doc(id);
     const vehicleDoc = await vehicleRef.get();
 
     if (!vehicleDoc.exists) {
-      console.warn(`[VehicleController][updateVehicle] Update failed: Vehicle not found for ID: ${id}`); // Keep warning
+      console.warn(`[VehicleController][updateVehicle] Update failed: Vehicle not found for ID: ${id}`);
       return res.status(404).json({ message: 'Vehicle not found.' });
     }
     if (vehicleDoc.data().ownerId !== ownerId) {
-      console.warn(`[VehicleController][updateVehicle] Update forbidden: User ${ownerId} does not own vehicle ${id}`); // Keep warning
+      console.warn(`[VehicleController][updateVehicle] Update forbidden: User ${ownerId} does not own vehicle ${id}`);
       return res.status(403).json({ message: 'Unauthorized: You do not own this vehicle.' });
     }
 
     const cleanUpdates = { ...updates };
     // --- Image Uploads ---
+    // NOTE: This logic doesn't delete old images on replace. 
+    // Consider adding that if storage cleanup is needed during updates.
     if (cleanUpdates.cor?.corImage?.startsWith('data:image')) { cleanUpdates.cor.corImage = await uploadBase64Image(cleanUpdates.cor.corImage, `${folderPath}/documents`); }
     const orImageBase64 = cleanUpdates.or?.orImage || cleanUpdates.or?.orImageUrl;
     if (orImageBase64?.startsWith('data:image')) {
@@ -309,14 +315,22 @@ const updateVehicle = async (req, res) => {
       else { cleanUpdates.or = { orImage: orUrl, orImageUrl: orUrl }; }
     }
     if (cleanUpdates.profilePhotoUrl?.startsWith('data:image')) { cleanUpdates.profilePhotoUrl = await uploadBase64Image(cleanUpdates.profilePhotoUrl, `${folderPath}/profile`); }
+    
     if (Array.isArray(cleanUpdates.exteriorPhotos)) {
       const p = await Promise.all(cleanUpdates.exteriorPhotos.map((photo, i) => uploadBase64Image(photo, `${folderPath}/exterior_${i}`)));
       cleanUpdates.exteriorPhotos = p.filter(url => url);
-    } else if (cleanUpdates.hasOwnProperty('exteriorPhotos')) { delete cleanUpdates.exteriorPhotos; console.warn(`[VC][update] Ignoring non-array exteriorPhotos.`); } // Keep warning
+    } else if (cleanUpdates.hasOwnProperty('exteriorPhotos')) { 
+      delete cleanUpdates.exteriorPhotos; 
+      console.warn(`[VC][update] Ignoring non-array exteriorPhotos.`); 
+    }
+    
     if (Array.isArray(cleanUpdates.interiorPhotos)) {
       const p = await Promise.all(cleanUpdates.interiorPhotos.map((photo, i) => uploadBase64Image(photo, `${folderPath}/interior_${i}`)));
       cleanUpdates.interiorPhotos = p.filter(url => url);
-    } else if (cleanUpdates.hasOwnProperty('interiorPhotos')) { delete cleanUpdates.interiorPhotos; console.warn(`[VC][update] Ignoring non-array interiorPhotos.`); } // Keep warning
+    } else if (cleanUpdates.hasOwnProperty('interiorPhotos')) { 
+      delete cleanUpdates.interiorPhotos; 
+      console.warn(`[VC][update] Ignoring non-array interiorPhotos.`); 
+    }
 
     // --- Geocode Location ---
     if (cleanUpdates.location && typeof cleanUpdates.location === 'object') {
@@ -330,103 +344,104 @@ const updateVehicle = async (req, res) => {
     if (price !== undefined && price !== null) { cleanUpdates.rentalPricePerDay = parseFloat(price); }
     if (cleanUpdates.seats) { cleanUpdates.seatingCapacity = parseInt(cleanUpdates.seats, 10); }
     else if (cleanUpdates.seatingCapacity) { cleanUpdates.seatingCapacity = parseInt(cleanUpdates.seatingCapacity, 10); }
+    
+    // --- UPDATED: Handle motorcycle fields on update ---
+    if (cleanUpdates.hasOwnProperty('engineDisplacement')) {
+        cleanUpdates.engineDisplacement = cleanUpdates.engineDisplacement ? parseInt(cleanUpdates.engineDisplacement, 10) : null;
+    }
+    // assetType and motorcycleType are strings, they will be saved as-is if present in 'cleanUpdates'
+    // --- END UPDATE ---
 
     // --- AVAILABILITY CONVERSION ---
     if (cleanUpdates.hasOwnProperty('availability') && Array.isArray(cleanUpdates.availability)) {
-      // console.log(`[VehicleController][updateVehicle] Processing availability update for vehicle ${id}:`, JSON.stringify(cleanUpdates.availability)); // Removed debug log
       cleanUpdates.availability = cleanUpdates.availability
         .filter(period => period.start && period.end)
         .map(period => {
           try {
             const startDate = admin.firestore.Timestamp.fromDate(new Date(`${period.start}T00:00:00Z`));
             const endDate = admin.firestore.Timestamp.fromDate(new Date(`${period.end}T00:00:00Z`));
-            // console.log(`[VehicleController][updateVehicle] Converted period for update: Start=${startDate.toDate().toISOString()}, End=${endDate.toDate().toISOString()}`); // Removed debug log
             if (isNaN(startDate.toDate().getTime()) || isNaN(endDate.toDate().getTime())) {
                 throw new Error('Invalid date created from string');
             }
             return { start: startDate, end: endDate };
           } catch (dateError) {
-             console.error(`[VehicleController][updateVehicle] FAILED DATE CONVERSION for period:`, period, dateError); // Keep error log
+             console.error(`[VehicleController][updateVehicle] FAILED DATE CONVERSION for period:`, period, dateError);
              return null;
           }
         })
         .filter(period => period !== null);
-      // console.log(`[VehicleController][updateVehicle] Final availability array for Firestore update on vehicle ${id}:`, JSON.stringify(cleanUpdates.availability)); // Removed debug log
     } else if (cleanUpdates.hasOwnProperty('availability')) {
-      console.warn(`[VehicleController][updateVehicle] Received non-array or null for availability update on vehicle ${id}. Setting to empty array.`); // Keep warning
+      console.warn(`[VehicleController][updateVehicle] Received non-array or null for availability update on vehicle ${id}. Setting to empty array.`);
       cleanUpdates.availability = [];
     }
     // --- END AVAILABILITY CONVERSION ---
 
     cleanUpdates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
 
-    // console.log(`[VehicleController][updateVehicle] Updating Firestore document ${id} with FINAL keys:`, JSON.stringify(Object.keys(cleanUpdates))); // Removed debug log
     await vehicleRef.update(cleanUpdates);
-    // console.log(`[VehicleController][updateVehicle] Vehicle ID ${id} updated successfully.`); // Removed debug log
     res.status(200).json({ message: 'Vehicle updated successfully.', id });
 
   } catch (error) {
-    console.error(`[VehicleController][updateVehicle] Critical error updating vehicle ID ${req.params.id}:`, error); // Keep error log
+    console.error(`[VehicleController][updateVehicle] Critical error updating vehicle ID ${req.params.id}:`, error);
     res.status(500).json({ message: 'An internal error occurred while updating the vehicle.'});
   }
 };
 
 
 /**
- * Delete a vehicle. Includes placeholder for deleting associated storage files.
+ * Delete a vehicle. Includes logic for deleting associated storage files.
  */
 const deleteVehicle = async (req, res) => {
   try {
     const { id } = req.params;
     const ownerId = req.customUser.uid;
-    // console.log(`[VehicleController][deleteVehicle] Attempting to delete vehicle ID: ${id} for owner: ${ownerId}`); // Removed debug log
 
     const vehicleRef = db.collection('vehicles').doc(id);
     const vehicleDoc = await vehicleRef.get();
 
     if (!vehicleDoc.exists) {
-      console.warn(`[VehicleController][deleteVehicle] Delete failed: Vehicle not found for ID: ${id}`); // Keep warning
+      console.warn(`[VehicleController][deleteVehicle] Delete failed: Vehicle not found for ID: ${id}`);
       return res.status(404).json({ message: 'Vehicle not found.' });
     }
     if (vehicleDoc.data().ownerId !== ownerId) {
-       console.warn(`[VehicleController][deleteVehicle] Delete forbidden: User ${ownerId} does not own vehicle ${id}`); // Keep warning
+       console.warn(`[VehicleController][deleteVehicle] Delete forbidden: User ${ownerId} does not own vehicle ${id}`);
       return res.status(403).json({ message: 'Unauthorized: You do not own this vehicle.' });
     }
 
     // --- Delete associated images ---
     const vehicleData = vehicleDoc.data();
     const imagePathsToDelete = [];
-    const extractPath = (url) => {
-        if (!url || !url.includes(storageBucket.name)) return null;
-        try {
-            const urlParts = new URL(url);
-            const prefix = `/b/${storageBucket.name}/o/`;
-            if (urlParts.pathname.startsWith(prefix)) {
-                return decodeURIComponent(urlParts.pathname.substring(prefix.length).split('?')[0]);
-            }
-        } catch(e){ console.error("Error extracting path from URL:", url, e)} // Keep error log
-        return null;
-    };
-    if (vehicleData.cor?.corImage) imagePathsToDelete.push(extractPath(vehicleData.cor.corImage));
-    if (vehicleData.or?.orImage) imagePathsToDelete.push(extractPath(vehicleData.or.orImage));
-    if (vehicleData.profilePhotoUrl) imagePathsToDelete.push(extractPath(vehicleData.profilePhotoUrl));
-    if (Array.isArray(vehicleData.exteriorPhotos)) vehicleData.exteriorPhotos.forEach(url => imagePathsToDelete.push(extractPath(url)));
-    if (Array.isArray(vehicleData.interiorPhotos)) vehicleData.interiorPhotos.forEach(url => imagePathsToDelete.push(extractPath(url)));
 
-    const validPaths = imagePathsToDelete.filter(path => path);
-    if (validPaths.length > 0) {
-        // console.log(`[VehicleController][deleteVehicle] Deleting ${validPaths.length} storage files for vehicle ${id}...`); // Removed debug log
-        const deletePromises = validPaths.map(path => storageBucket.file(path).delete().catch(err => console.error(`Failed to delete ${path}:`, err.message))); // Keep error log
-        await Promise.all(deletePromises);
-        // console.log(`[VehicleController][deleteVehicle] Finished attempting storage file deletion for ${id}.`); // Removed debug log
+    // Add all URLs to the list
+    if (vehicleData.cor?.corImage) imagePathsToDelete.push(vehicleData.cor.corImage);
+    if (vehicleData.or?.orImage) imagePathsToDelete.push(vehicleData.or.orImage);
+    if (vehicleData.profilePhotoUrl) imagePathsToDelete.push(vehicleData.profilePhotoUrl);
+    if (Array.isArray(vehicleData.exteriorPhotos)) vehicleData.exteriorPhotos.forEach(url => imagePathsToDelete.push(url));
+    if (Array.isArray(vehicleData.interiorPhotos)) vehicleData.interiorPhotos.forEach(url => imagePathsToDelete.push(url));
+
+    const deletePromises = [];
+    for (const url of imagePathsToDelete) {
+        const path = extractStoragePath(url); // Use the helper function
+        if (path) {
+            console.log(`[VehicleController][deleteVehicle] Deleting file from storage: ${path}`);
+            deletePromises.push(
+                storageBucket.file(path).delete().catch(err => 
+                    console.error(`Failed to delete ${path}:`, err.message) // Log error but don't stop
+                )
+            );
+        }
     }
+    
+    await Promise.all(deletePromises);
+    console.log(`[VehicleController][deleteVehicle] Finished attempting storage file deletion for ${id}.`);
+    // --- End Image Deletion ---
 
     await vehicleRef.delete();
-    // console.log(`[VehicleController][deleteVehicle] Vehicle ID ${id} deleted successfully.`); // Removed debug log
+    console.log(`[VehicleController][deleteVehicle] Vehicle ID ${id} deleted successfully.`);
     res.status(200).json({ message: 'Vehicle deleted successfully.' });
 
   } catch (error) {
-    console.error(`[VehicleController][deleteVehicle] Critical error deleting vehicle ID ${req.params.id}:`, error); // Keep error log
+    console.error(`[VehicleController][deleteVehicle] Critical error deleting vehicle ID ${req.params.id}:`, error);
     res.status(500).json({ message: 'An internal error occurred while deleting the vehicle.'});
   }
 };
@@ -438,12 +453,10 @@ const deleteVehicle = async (req, res) => {
 const getVehiclesByOwner = async (req, res) => {
   try {
     const ownerId = req.customUser.uid;
-    // console.log(`[VehicleController][getVehiclesByOwner] Fetching vehicles for owner: ${ownerId}`); // Removed debug log
     const vehiclesRef = db.collection('vehicles');
     const snapshot = await vehiclesRef.where('ownerId', '==', ownerId).get();
 
     if (snapshot.empty) {
-      // console.log(`[VehicleController][getVehiclesByOwner] No vehicles found for owner: ${ownerId}`); // Removed debug log
       return res.status(200).json([]);
     }
 
@@ -467,10 +480,9 @@ const getVehiclesByOwner = async (req, res) => {
           availability: parsedAvailability,
       };
     });
-    // console.log(`[VehicleController][getVehiclesByOwner] Successfully fetched ${vehicles.length} vehicles for owner: ${ownerId}`); // Removed debug log
     res.status(200).json(vehicles);
   } catch (error) {
-    console.error(`[VehicleController][getVehiclesByOwner] Error fetching vehicles for owner ${req.customUser.uid}:`, error); // Keep error log
+    console.error(`[VehicleController][getVehiclesByOwner] Error fetching vehicles for owner ${req.customUser.uid}:`, error);
     res.status(500).json({ message: 'Error fetching owner vehicles.', error: error.message });
   }
 };

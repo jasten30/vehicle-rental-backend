@@ -35,7 +35,7 @@ router.get(
 router.get(
   '/availability/:vehicleId',
   authMiddleware.verifyToken, // Note: This check requires a renter role
-  authMiddleware.authorizeRole(['renter']), // Added authorization
+  authMiddleware.authorizeRole(['renter', 'owner']), // Added authorization
   bookingController.apiCheckAvailability
 );
 
@@ -50,7 +50,7 @@ router.get(
 router.post(
   '/',
   authMiddleware.verifyToken,
-  authMiddleware.authorizeRole(['renter']), // Only renters should create bookings
+  authMiddleware.authorizeRole(['renter', 'owner']), // Only renters should create bookings
   bookingController.createBooking
 );
 

@@ -1,11 +1,10 @@
 const express = require('express');
 const cors = require('cors');
-
-// 👇 ADDED IMPORTS
 const cron = require('node-cron');
-// Make sure these paths are correct relative to server.js in your 'src' folder
 const { admin, db } = require('./utils/firebase');
 const { createNotification } = require('./utils/notificationHelper');
+
+const { autoHandleOverdueBookings } = require('./controllers/bookingController'); 
 
 // Import route modules
 const authRoutes = require('./routes/authRoutes');
@@ -28,7 +27,7 @@ app.use((req, res, next) => {
 });
 
 app.use(cors({
-  origin: ['http://localhost:8080', 'http://localhost:5000'],
+  origin: ['http://localhost:8080', 'http://localhost:5000'], // Adjust origins as needed
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
@@ -58,10 +57,8 @@ app.use((err, req, res, next) => {
   res.status(500).send('Something broke!');
 });
 
-// --- 👇 ADDED CRON JOB FOR BOOKING REMINDERS ---
-console.log("Setting up hourly cron job for booking reminders (runs at 0 minutes past the hour).");
-// This cron string '0 * * * *' means "at minute 0 of every hour"
-cron.schedule('0 * * * *', async () => {
+// --- Function to send booking reminders ---
+const sendBookingReminders = async () => {
   console.log('--- Cron Job: Running sendBookingReminders ---');
   try {
     const now = admin.firestore.Timestamp.now();
@@ -97,7 +94,7 @@ cron.schedule('0 * * * *', async () => {
         createNotification(
           booking.renterId,
           `Reminder: Your booking (#${bookingId.substring(0,5)}) is in 24 hours.`,
-          `/booking/${bookingId}`
+          `/dashboard/my-bookings/${bookingId}`
         )
       );
       
@@ -106,7 +103,7 @@ cron.schedule('0 * * * *', async () => {
         createNotification(
           booking.ownerId,
           `Reminder: Your vehicle is scheduled for pickup in 24 hours (Booking #${bookingId.substring(0,5)}).`,
-          `/booking/${bookingId}`
+          `/dashboard/my-bookings/${bookingId}`
         )
       );
 
@@ -120,7 +117,6 @@ cron.schedule('0 * * * *', async () => {
     console.log(`Cron Job: Sent ${snapshot.size} booking reminders.`);
 
   } catch (error) {
-    // This query *will fail* if you haven't created the Firestore index.
     if (error.code === 9) { // FAILED_PRECONDITION
        console.error('Cron Job Error: Firestore composite index is missing for this query. Please create it in the Firebase console.');
        console.error('The index required is on collection `bookings`: `paymentStatus` (ASC), `isReminderSent` (ASC), `startDate` (ASC)');
@@ -128,6 +124,20 @@ cron.schedule('0 * * * *', async () => {
        console.error('Cron Job: Error sending booking reminders:', error);
     }
   }
+};
+
+// --- Cron Job Scheduler ---
+console.log("Setting up hourly cron job (runs at 0 minutes past the hour).");
+cron.schedule('0 * * * *', async () => {
+  console.log('--- Hourly Cron Job Started ---');
+  
+  // 1. Send 24-hour reminders
+  await sendBookingReminders();
+  
+  // 2. Check for late returns (3-hour grace period)
+  await autoHandleOverdueBookings();
+  
+  console.log('--- Hourly Cron Job Finished ---');
 });
 
 

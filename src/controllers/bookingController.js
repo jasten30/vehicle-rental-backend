@@ -30,19 +30,19 @@ const convertToDate = (value) => {
  */
 const extractUserDetails = (userDoc) => {
   if (!userDoc || !userDoc.exists) {
-    return { name: 'Unknown User', email: 'N/A', profilePhotoUrl: null };
+    return { name: 'Unknown User', email: 'N/A', profilePhotoUrl: null, payoutQRCodeUrl: null };
   }
   const userData = userDoc.data();
   return {
     uid: userDoc.id,
     name: `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || 'User',
     email: userData.email || 'N/A',
-    profilePhotoUrl: userData.profilePhotoUrl || null, // <-- Ensures this field is included
-    payoutDetails: userData.payoutDetails || null // Include payout details for owner
+    profilePhotoUrl: userData.profilePhotoUrl || null, // <-- Ensures profile pic is included
+    payoutQRCodeUrl: userData.payoutQRCodeUrl || null, // <-- Ensures QR code is included
+    payoutDetails: userData.payoutDetails || null 
   };
 };
 // ================================================
-
 
 const getAllBookings = async (req, res) => {
   try {
@@ -79,7 +79,7 @@ const getAllBookings = async (req, res) => {
 
     const enrichedBookings = bookingsData.map((booking) => {
       const vehicle = vehiclesMap.get(booking.vehicleId);
-      const renter = rentersMap.get(booking.renterId); // Renter object now has profilePhotoUrl
+      const renter = rentersMap.get(booking.renterId);
       return {
         ...booking,
         startDate: convertToDate(booking.startDate)?.toISOString() || null,
@@ -100,7 +100,7 @@ const getAllBookings = async (req, res) => {
 const createBooking = async (req, res) => {
   try {
     const { vehicleId, startDate, endDate } = req.body;
-    const renterId = req.customUser.uid;
+    const renterId = req.customUser.uid; // This is the user trying to book
 
     if (!vehicleId || !startDate || !endDate) {
       return res.status(400).json({ message: 'Missing required booking fields (vehicleId, startDate, endDate).' });
@@ -120,12 +120,19 @@ const createBooking = async (req, res) => {
     }
     const vehicleData = vehicleDoc.data();
     const ownerId = vehicleData.ownerId;
-    const rentalPricePerDay = parseFloat(vehicleData.rentalPricePerDay);
+    
+    // --- ADDED RULE ---
+    if (ownerId === renterId) {
+      log(`User ${renterId} blocked from booking their own vehicle ${vehicleId}`);
+      return res.status(403).json({ message: 'You cannot book your own vehicle.' });
+    }
+    // --- END ADDED RULE ---
 
+    const rentalPricePerDay = parseFloat(vehicleData.rentalPricePerDay);
     if (isNaN(rentalPricePerDay) || rentalPricePerDay <= 0) {
       return res.status(500).json({ message: 'Vehicle rental price is invalid or not set. Cannot create booking.' });
     }
-
+    
     const diffMilliseconds = end.getTime() - start.getTime();
     const diffHours = diffMilliseconds / (1000 * 60 * 60);
     const calculatedDays = Math.ceil(diffHours / 24);
@@ -170,22 +177,23 @@ const createBooking = async (req, res) => {
 };
 
 const apiCheckAvailability = async (req, res) => {
-  console.log('[BookingController] Checking availability with query:', req.query);
+  log(`Checking availability with query: ${JSON.stringify(req.query)}`);
   try {
     const { vehicleId } = req.params;
     const { startDate, endDate } = req.query; 
+    const requesterId = req.customUser.uid; // Get the user ID
 
     if (!startDate || !endDate) {
-        console.error('[BookingController] Availability check failed: Missing startDate or endDate.');
+        log('Availability check failed: Missing startDate or endDate.');
         return res.status(400).json({ isAvailable: false, message: 'Start date and end date are required.' });
     }
     const requestedStart = convertToDate(startDate);
     const requestedEnd = convertToDate(endDate);
 
-    console.log('[BookingController] Parsed Dates - Start:', requestedStart, 'End:', requestedEnd);
+    log(`Parsed Dates - Start: ${requestedStart}, End: ${requestedEnd}`);
 
     if (!requestedStart || !requestedEnd || requestedStart >= requestedEnd) {
-        console.error('[BookingController] Availability check failed: Invalid date/time range.');
+        log('Availability check failed: Invalid date/time range.');
         return res.status(400).json({ isAvailable: false, message: 'Invalid date/time range provided.' });
     }
 
@@ -195,18 +203,29 @@ const apiCheckAvailability = async (req, res) => {
     }
     const vehicleData = vehicleDoc.data();
 
+    // --- THIS RULE IS ALREADY IN PLACE ---
+    if (vehicleData.ownerId === requesterId) {
+      log(`Owner ${requesterId} blocked from checking availability on their own vehicle ${vehicleId}`);
+      return res.status(403).json({ isAvailable: false, message: 'You cannot book your own vehicle.' });
+    }
+    // --- END RULE ---
+
+    // 1. Check Owner's Blocked Dates
     const unavailablePeriods = vehicleData.availability || [];
     for (const period of unavailablePeriods) {
       const periodStart = convertToDate(period.start);
       const periodEnd = convertToDate(period.end);
       if (periodStart && periodEnd && requestedStart < periodEnd && requestedEnd > periodStart) {
+        log(`Availability check failed: Overlaps with owner block ${period.start}-${period.end}`);
         return res.status(200).json({ isAvailable: false, message: 'Vehicle is unavailable (owner block) during the requested times.' });
       }
     }
 
+    // 2. Check Other Bookings
+    const activeBookingStatuses = ['confirmed', 'pending_extension_payment', 'awaiting_return'];
     const bookingsRef = db.collection('bookings')
                          .where('vehicleId', '==', vehicleId)
-                         .where('paymentStatus', '==', 'confirmed');
+                         .where('paymentStatus', 'in', activeBookingStatuses);
 
     const snapshot = await bookingsRef.get();
     let isOverlapping = false;
@@ -216,6 +235,7 @@ const apiCheckAvailability = async (req, res) => {
       const bookingEnd = convertToDate(booking.endDate);
       if (bookingStart && bookingEnd && requestedStart < bookingEnd && requestedEnd > bookingStart) {
         isOverlapping = true;
+        log(`Availability check failed: Overlaps with existing booking ${doc.id}`);
       }
     });
 
@@ -223,6 +243,7 @@ const apiCheckAvailability = async (req, res) => {
       return res.status(200).json({ isAvailable: false, message: 'Vehicle is already booked during some of the requested dates.' });
     }
 
+    // 3. Calculate Cost if Available
     const rentalPricePerDay = parseFloat(vehicleData.rentalPricePerDay);
     if (isNaN(rentalPricePerDay) || rentalPricePerDay <= 0) {
       return res.status(500).json({ isAvailable: false, message: 'Vehicle rental price is invalid or not set.' });
@@ -234,6 +255,7 @@ const apiCheckAvailability = async (req, res) => {
     const billableDays = calculatedDays > 0 ? calculatedDays : 1;
     const totalCost = parseFloat((rentalPricePerDay * billableDays).toFixed(2));
 
+    log(`Availability check success. Cost: ${totalCost}`);
     res.status(200).json({
         isAvailable: true,
         message: 'Vehicle is available for the selected dates.',
@@ -324,6 +346,8 @@ const getBookingById = async (req, res) => {
     }
 
     const bookingData = bookingDoc.data();
+    
+    // --- UPDATED: Use helper function ---
     const [vehicleDoc, renterDoc] = await Promise.all([
         db.collection('vehicles').doc(bookingData.vehicleId).get(),
         db.collection('users').doc(bookingData.renterId).get()
@@ -331,7 +355,6 @@ const getBookingById = async (req, res) => {
     
     const vehicleData = vehicleDoc.exists ? vehicleDoc.data() : null;
     
-    // Fetch the full owner data object
     let ownerDoc = null;
     if (vehicleData && vehicleData.ownerId) {
         ownerDoc = await db.collection('users').doc(vehicleData.ownerId).get();
@@ -339,7 +362,7 @@ const getBookingById = async (req, res) => {
     
     const requesterId = req.customUser.uid;
     const requesterRole = req.customUser.role;
-    if (requesterRole !== 'admin' && requesterId !== bookingData.renterId && requesterId !== vehicleData.ownerId) {
+    if (requesterRole !== 'admin' && requesterId !== bookingData.renterId && requesterId !== (vehicleData ? vehicleData.ownerId : null)) {
       return res.status(403).json({ message: 'Unauthorized access to booking details.' });
     }
 
@@ -350,10 +373,10 @@ const getBookingById = async (req, res) => {
       endDate: convertToDate(bookingData.endDate)?.toISOString() || null,
       createdAt: convertToDate(bookingData.createdAt)?.toISOString() || null,
       vehicleDetails: vehicleData,
-      // --- UPDATED: Use helper function for both ---
-      renterDetails: extractUserDetails(renterDoc),
-      ownerDetails: extractUserDetails(ownerDoc), 
+      renterDetails: extractUserDetails(renterDoc), // <-- Use helper
+      ownerDetails: extractUserDetails(ownerDoc),  // <-- Use helper
     });
+    // --- END UPDATE ---
   } catch (error) {
     console.error(`Error fetching booking by ID ${req.params.bookingId}:`, error);
     res.status(500).json({ message: 'Error fetching booking.', error: error.message });
@@ -626,7 +649,6 @@ const getOwnerBookings = async (req, res) => {
         const rentersMap = new Map();
         renterDocs.forEach(doc => {
             if (doc.exists) {
-                // --- UPDATED: Use helper function ---
                 rentersMap.set(doc.id, extractUserDetails(doc));
             }
         });
@@ -636,7 +658,7 @@ const getOwnerBookings = async (req, res) => {
                 ...booking,
                 startDate: convertToDate(booking.startDate)?.toISOString() || null,
                 endDate: convertToDate(booking.endDate)?.toISOString() || null,
-                renterDetails: rentersMap.get(booking.renterId) || { name: 'N/A' }, // <-- UPDATED
+                renterDetails: rentersMap.get(booking.renterId) || { name: 'N/A' },
                 vehicleDetails: vehiclesMap.get(booking.vehicleId) || { make: 'Unknown', model: 'Vehicle' },
             };
         });
@@ -681,8 +703,8 @@ const updateBookingStatus = async (req, res) => {
   try {
     const { bookingId } = req.params;
     const { newStatus } = req.body;
-    const userId = req.customUser.uid; // Get current user ID
-    const userRole = req.customUser.role; // Get current user role
+    const userId = req.customUser.uid;
+    const userRole = req.customUser.role;
 
     if (!newStatus) {
         console.error(`[BookingController] updateBookingStatus failed for booking ${bookingId}: Missing newStatus.`);
@@ -690,7 +712,7 @@ const updateBookingStatus = async (req, res) => {
     }
 
     const bookingRef = db.collection('bookings').doc(bookingId);
-    const bookingDoc = await bookingRef.get(); // Fetch the document once
+    const bookingDoc = await bookingRef.get();
 
     if (!bookingDoc.exists) {
       console.error(`[BookingController] updateBookingStatus failed: Booking ${bookingId} not found.`);
@@ -852,10 +874,6 @@ const submitBookingReport = async (req, res) => {
         res.status(500).json({ message: 'Server error submitting report.', error: error.message });
     }
 };
-
-// ... (requestBookingExtension, confirmExtensionPayment, deferExtensionPayment) ...
-// (These functions seem correct and don't need profile pic logic)
-// ...
 
 const requestBookingExtension = async (req, res) => {
     try {
@@ -1124,7 +1142,6 @@ const generateBookingContract = async (req, res) => {
         db.collection('vehicles').doc(booking.vehicleId).get()
     ]);
     
-    // --- UPDATED: Use helper function ---
     const owner = extractUserDetails(ownerDoc);
     const renter = extractUserDetails(renterDoc);
     const vehicle = vehicleDoc.exists ? vehicleDoc.data() : { make: 'N/A', model: 'N/A', year: 'N/A', plateNumber: 'N/A', vin: 'N/A' };
@@ -1144,7 +1161,6 @@ const generateBookingContract = async (req, res) => {
             extensionsText += `Extension ${index + 1}:\n`;
             extensionsText += `   Hours: ${ext.hours}\n`;
             extensionsText += `   Cost: ₱${ext.cost.toFixed(2)}\n`;
-            // Handle both Timestamp and serialized Timestamp
             const extEndDate = ext.newEndDate?.toDate ? ext.newEndDate.toDate() : (ext.newEndDate?._seconds ? new Date(ext.newEndDate._seconds * 1000) : null);
             extensionsText += `   New Return Date: ${extEndDate?.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' }) || 'N/A'}\n`;
             extensionsText += `   Payment Status: ${ext.status}\n`;
@@ -1224,6 +1240,80 @@ Date: ____________________
   }
 };
 
+// ================================================
+//  NEW FUNCTION FOR CRON JOB
+// ================================================
+const autoHandleOverdueBookings = async () => {
+  log('Running cron job: autoHandleOverdueBookings...');
+  const now = new Date(); // The current time
+
+  try {
+    // 1. Find all bookings that are 'confirmed' (trip is active)
+    //    AND whose original end date has passed.
+    const bookingsRef = db.collection('bookings');
+    const snapshot = await bookingsRef
+      .where('paymentStatus', '==', 'confirmed')
+      .where('endDate', '<', admin.firestore.Timestamp.fromDate(now)) // Find all active trips that *should* have ended
+      .get();
+
+    if (snapshot.empty) {
+      log('Cron Job: No active bookings found past their end date.');
+      return;
+    }
+
+    const updatesBatch = db.batch();
+    let notifications = [];
+
+    snapshot.forEach(doc => {
+      const booking = doc.data();
+      const endDate = convertToDate(booking.endDate);
+      if (!endDate) return; // Skip if date is invalid
+
+      // 3. Calculate the end of the 3-hour grace period
+      const gracePeriodEnd = DateTime.fromJSDate(endDate).plus({ hours: 3 }).toJSDate();
+
+      // 4. Check if we are PAST the grace period
+      if (now > gracePeriodEnd) {
+        log(`Cron Job: Booking ${doc.id} is past 3-hour grace period. Updating status.`);
+        
+        // 5. Update the booking status
+        const bookingRef = db.collection('bookings').doc(doc.id);
+        updatesBatch.update(bookingRef, {
+          paymentStatus: 'awaiting_return', // This is the new "late" status
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        // 6. Prepare notifications
+        notifications.push(createNotification(
+          booking.ownerId,
+          `Your vehicle for booking #${doc.id.substring(0,5)} is now 3 hours overdue for return.`,
+          `/dashboard/my-bookings/${doc.id}`
+        ));
+         notifications.push(createNotification(
+          booking.renterId,
+          `Your booking (#${doc.id.substring(0,5)}) is now 3 hours overdue. Please return the vehicle. Late fees may apply.`,
+          `/dashboard/my-bookings/${doc.id}`
+        ));
+      }
+    });
+
+    // 7. Commit all updates and send all notifications
+    await updatesBatch.commit();
+    if (notifications.length > 0) {
+       await Promise.all(notifications);
+       log(`Cron Job: Sent ${notifications.length} late return notifications.`);
+    }
+
+  } catch (error) {
+     if (error.code === 9) { // FAILED_PRECONDITION
+        console.error('Cron Job Error: Firestore composite index is missing for autoHandleOverdueBookings. Please create it.');
+        console.error('The index required is on collection `bookings`: `paymentStatus` (ASC), `endDate` (ASC)');
+     } else {
+        console.error('[Cron Job: autoHandleOverdueBookings] Error:', error);
+     }
+  }
+};
+
 
 module.exports = {
   getAllBookings,
@@ -1246,5 +1336,8 @@ module.exports = {
   requestBookingExtension,
   confirmExtensionPayment,
   deferExtensionPayment,
-  generateBookingContract
+  generateBookingContract,
+  autoHandleOverdueBookings, 
 };
+
+

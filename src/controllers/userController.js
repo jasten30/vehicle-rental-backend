@@ -1,25 +1,44 @@
 const { admin, db, storageBucket } = require('../utils/firebase');
 const { sendVerificationEmail } = require('../utils/emailService');
+const { getAuth } = require('firebase-admin/auth');
 
 const log = (message, data = '') => {
   console.log(`[UserController] ${message}`, data);
 };
 
+// =============================================================
+// HELPER FUNCTION (Copied from vehicleController)
+// =============================================================
 const uploadBase64Image = async (base64String, folderName) => {
-  if (!base64String || !base64String.startsWith('data:image/')) return null;
+  if (!base64String || !base64String.startsWith('data:image/')) {
+    // If it's already a URL, just return it.
+    if (typeof base64String === 'string' && base64String.startsWith('http')) {
+      return base64String;
+    }
+    return null;
+  }
   const matches = base64String.match(/^data:(image\/[a-z]+);base64,(.+)$/);
-  if (!matches || matches.length !== 3) throw new Error('Invalid Base64 string.');
+  if (!matches || matches.length !== 3) {
+    console.error('Invalid Base64 string format.');
+    return null;
+  }
 
   const contentType = matches[1];
   const buffer = Buffer.from(matches[2], 'base64');
   const fileName = `${folderName}/${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
   const file = storageBucket.file(fileName);
 
-  await file.save(buffer, { metadata: { contentType }, public: true });
-  return `https://storage.googleapis.com/${storageBucket.name}/${fileName}`;
+  try {
+    await file.save(buffer, { metadata: { contentType }, public: true });
+    // Return the correct public URL
+    return file.publicUrl();
+  } catch (uploadError) {
+    console.error(`[UserController/upload] Error uploading image to ${fileName}:`, uploadError);
+    return null;
+  }
 };
+// =============================================================
 
-// CHANGED: from exports.createUserProfile to const createUserProfile
 const createUserProfile = async (req, res) => {
   try {
     const userId = req.customUser.uid;
@@ -39,7 +58,6 @@ const createUserProfile = async (req, res) => {
       role: 'renter',
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       emailVerified: req.customUser.email_verified || false,
-      // Add the new fields on creation
       favorites: [],
       isBlocked: false,
     };
@@ -48,14 +66,13 @@ const createUserProfile = async (req, res) => {
     if (phone_number) newUserProfile.phoneNumber = phone_number;
 
     await userDocRef.set(newUserProfile, { merge: true }); // Use merge just in case
-    res.status(201).json({ message: 'User profile created successfully.', user: newUserProfile });
+    res.status(210).json({ message: 'User profile created successfully.', user: newUserProfile });
   } catch (error) {
     console.error('Error creating user profile:', error);
     res.status(500).json({ message: 'Server error creating user profile.' });
   }
 };
 
-// CHANGED: from exports.getUserProfile to const getUserProfile
 const getUserProfile = async (req, res) => {
   try {
     const userId = req.customUser.uid;
@@ -76,13 +93,17 @@ const getUserProfile = async (req, res) => {
       about: userData.about || '',
       bannerImageUrl: userData.bannerImageUrl || '',
       profilePhotoUrl: userData.profilePhotoUrl || '',
+      // --- ADDED ---
+      payoutQRCodeUrl: userData.payoutQRCodeUrl || null,
+      payoutDetails: userData.payoutDetails || null,
+      // --- END ADDED ---
       isApprovedToDrive: userData.isApprovedToDrive || false,
       isMobileVerified: userData.isMobileVerified || false,
       emailVerified: userData.emailVerified || false,
       createdAt: userData.createdAt || null,
       monthlyBookingCounts: userData.monthlyBookingCounts || {},
-      favorites: userData.favorites || [], // 👈 UPDATED: Added favorites
-      isBlocked: userData.isBlocked || false, // 👈 UPDATED: Added isBlocked
+      favorites: userData.favorites || [],
+      isBlocked: userData.isBlocked || false,
     };
     res.status(200).json(profile);
   } catch (error) {
@@ -91,7 +112,6 @@ const getUserProfile = async (req, res) => {
   }
 };
 
-// CHANGED: from exports.updateUserProfile to const updateUserProfile
 const updateUserProfile = async (req, res) => {
   try {
     const userId = req.customUser.uid;
@@ -100,28 +120,35 @@ const updateUserProfile = async (req, res) => {
 
     // --- HANDLE IMAGE UPLOADS ---
     if (updates.bannerImageBase64) {
-      const bannerUrl = await uploadBase64Image(updates.bannerImageBase64, 'user_banners');
+      const bannerUrl = await uploadBase64Image(updates.bannerImageBase64, `user_banners/${userId}`);
       if (bannerUrl) {
         updates.bannerImageUrl = bannerUrl;
       }
       delete updates.bannerImageBase64;
     }
 
-    // 👇 UPDATED: Handle Profile Photo Upload from modal
     if (updates.profilePhotoBase64) {
-        const photoUrl = await uploadBase64Image(updates.profilePhotoBase64, 'user_photos');
+        const photoUrl = await uploadBase64Image(updates.profilePhotoBase64, `user_photos/${userId}`);
         if (photoUrl) {
             updates.profilePhotoUrl = photoUrl; // Set the new URL
         }
         delete updates.profilePhotoBase64; // Remove base64 data
     }
-    // If profilePhotoUrl is explicitly set to null (from removeImage), it will be handled below
-    // --- END IMAGE UPLOADS ---
+    
+    // --- !! ADDED QR CODE UPLOAD LOGIC !! ---
+    if (updates.payoutQRCode && updates.payoutQRCode.startsWith('data:image')) {
+      const folderName = `user_payout_qr/${userId}`;
+      // Upload the new QR code
+      updates.payoutQRCodeUrl = await uploadBase64Image(updates.payoutQRCode, folderName);
+      // Remove the large Base64 string so it's not saved to Firestore
+      delete updates.payoutQRCode; 
+    }
+    // --- !! END ADDED LOGIC !! ---
 
 
     if (updates.email && updates.email !== req.customUser.email) {
       try {
-        await admin.auth().updateUser(userId, {
+        await getAuth().updateUser(userId, {
           email: updates.email,
           emailVerified: false
         });
@@ -135,14 +162,18 @@ const updateUserProfile = async (req, res) => {
     const allowedUpdates = {};
     if (updates.firstName !== undefined) allowedUpdates.firstName = updates.firstName;
     if (updates.lastName !== undefined) allowedUpdates.lastName = updates.lastName;
-    if (updates.phoneNumber !== undefined) allowedUpdates.phoneNumber = updates.phoneNumber; // Keep just in case
+    if (updates.phoneNumber !== undefined) allowedUpdates.phoneNumber = updates.phoneNumber;
     if (updates.address !== undefined) allowedUpdates.address = updates.address;
     if (updates.about !== undefined) allowedUpdates.about = updates.about;
     if (updates.bannerImageUrl !== undefined) allowedUpdates.bannerImageUrl = updates.bannerImageUrl;
-    if (updates.isMobileVerified !== undefined) allowedUpdates.isMobileVerified = updates.isMobileVerified; // Keep just in case
+    if (updates.isMobileVerified !== undefined) allowedUpdates.isMobileVerified = updates.isMobileVerified;
     if (updates.email !== undefined) allowedUpdates.email = updates.email;
     if (updates.emailVerified !== undefined) allowedUpdates.emailVerified = updates.emailVerified;
-    if (updates.profilePhotoUrl !== undefined) allowedUpdates.profilePhotoUrl = updates.profilePhotoUrl; // 👈 ADDED: Allow this
+    if (updates.profilePhotoUrl !== undefined) allowedUpdates.profilePhotoUrl = updates.profilePhotoUrl;
+    // --- ADDED ---
+    if (updates.payoutQRCodeUrl !== undefined) allowedUpdates.payoutQRCodeUrl = updates.payoutQRCodeUrl;
+    if (updates.payoutDetails !== undefined) allowedUpdates.payoutDetails = updates.payoutDetails;
+    // --- END ADDED ---
 
     if (Object.keys(allowedUpdates).length === 0) {
       return res.status(400).json({ message: 'No valid fields provided for update.' });
@@ -154,7 +185,13 @@ const updateUserProfile = async (req, res) => {
       const currentData = currentUserDoc.exists ? currentUserDoc.data() : {};
       const firstName = allowedUpdates.firstName ?? currentData.firstName ?? '';
       const lastName = allowedUpdates.lastName ?? currentData.lastName ?? '';
-      allowedUpdates.name = `${firstName} ${lastName}`.trim();
+      const newName = `${firstName} ${lastName}`.trim();
+      allowedUpdates.name = newName;
+      
+      // Update Firebase Auth display name
+      if (newName) {
+        await getAuth().updateUser(userId, { displayName: newName });
+      }
     }
 
     await userDocRef.set(allowedUpdates, { merge: true });
@@ -166,7 +203,6 @@ const updateUserProfile = async (req, res) => {
   }
 };
 
-// CHANGED: from exports.deleteUser to const deleteUser
 const deleteUser = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -175,21 +211,21 @@ const deleteUser = async (req, res) => {
     const snapshot = await vehiclesRef.where('ownerId', '==', userId).get();
 
     if (!snapshot.empty) {
-      console.log(`[UserController] Found ${snapshot.size} vehicle(s) to delete for user ${userId}.`);
+      log(`Found ${snapshot.size} vehicle(s) to delete for user ${userId}.`);
       const batch = db.batch();
       snapshot.docs.forEach(doc => {
         batch.delete(doc.ref);
       });
       await batch.commit();
-      console.log(`[UserController] Successfully deleted vehicles for user ${userId}.`);
+      log(`Successfully deleted vehicles for user ${userId}.`);
     }
 
     try {
-      await admin.auth().deleteUser(userId);
-      console.log(`[UserController] Successfully deleted user from Firebase Auth: ${userId}`);
+      await getAuth().deleteUser(userId);
+      log(`Successfully deleted user from Firebase Auth: ${userId}`);
     } catch (error) {
       if (error.code === 'auth/user-not-found') {
-        console.warn(`[UserController] User not found in Firebase Auth, but proceeding with Firestore cleanup for UID: ${userId}`);
+        console.warn(`User not found in Firebase Auth, but proceeding with Firestore cleanup for UID: ${userId}`);
       } else {
         throw error;
       }
@@ -197,7 +233,7 @@ const deleteUser = async (req, res) => {
     
     const userRef = db.collection('users').doc(userId);
     await userRef.delete();
-    console.log(`[UserController] Successfully deleted user from Firestore: ${userId}`);
+    log(`Successfully deleted user from Firestore: ${userId}`);
 
     res.status(200).json({ message: 'User and all associated data have been deleted successfully.' });
   } catch (error) {
@@ -206,7 +242,6 @@ const deleteUser = async (req, res) => {
   }
 };
 
-// CHANGED: from exports.submitDriveApplication to const submitDriveApplication
 const submitDriveApplication = async (req, res) => {
     try {
         const userId = req.customUser.uid;
@@ -217,8 +252,8 @@ const submitDriveApplication = async (req, res) => {
         }
 
         const [licenseUrl, otherIdUrl] = await Promise.all([
-            uploadBase64Image(licenseImageBase64, 'drive_applications'),
-            uploadBase64Image(otherIdImageBase64, 'drive_applications')
+            uploadBase64Image(licenseImageBase64, `drive_applications/${userId}`),
+            uploadBase64Image(otherIdImageBase64, `drive_applications/${userId}`)
         ]);
 
         if (!licenseUrl || !otherIdUrl) {
@@ -242,7 +277,6 @@ const submitDriveApplication = async (req, res) => {
     }
 };
 
-// CHANGED: from exports.submitHostApplication to const submitHostApplication
 const submitHostApplication = async (req, res) => {
   try {
     const userId = req.customUser.uid;
@@ -264,7 +298,6 @@ const submitHostApplication = async (req, res) => {
   }
 };
 
-// CHANGED: from exports.getAllUsers to const getAllUsers
 const getAllUsers = async (req, res) => {
   try {
     const usersSnapshot = await db.collection('users').get();
@@ -290,7 +323,6 @@ const getAllUsers = async (req, res) => {
   }
 };
 
-// CHANGED: from exports.updateUserRoleByAdmin to const updateUserRoleByAdmin
 const updateUserRoleByAdmin = async (req, res) => {
   try {
     const { userId } = req.params;
@@ -300,6 +332,9 @@ const updateUserRoleByAdmin = async (req, res) => {
     }
     const userDocRef = db.collection('users').doc(userId);
     await userDocRef.set({ role }, { merge: true });
+    
+    await getAuth().setCustomUserClaims(userId, { role: role });
+
     res.status(200).json({ message: 'User role updated successfully.', userId, newRole: role });
   } catch (error) {
     console.error('Error updating user role by admin:', error);
@@ -307,7 +342,6 @@ const updateUserRoleByAdmin = async (req, res) => {
   }
 };
 
-// CHANGED: from exports.sendEmailVerificationCode to const sendEmailVerificationCode
 const sendEmailVerificationCode = async (req, res) => {
   try {
     const { uid } = req.customUser;
@@ -338,7 +372,6 @@ const sendEmailVerificationCode = async (req, res) => {
   }
 };
 
-// CHANGED: from exports.verifyEmailCode to const verifyEmailCode
 const verifyEmailCode = async (req, res) => {
   try {
     const { uid } = req.customUser;
@@ -363,7 +396,7 @@ const verifyEmailCode = async (req, res) => {
       emailVerificationCode: admin.firestore.FieldValue.delete(),
       emailVerificationExpires: admin.firestore.FieldValue.delete(),
     });
-    await admin.auth().updateUser(uid, { emailVerified: true });
+    await getAuth().updateUser(uid, { emailVerified: true });
     res.status(200).json({ message: 'Email verified successfully.' });
   } catch (error) {
     console.error('Error verifying email code:', error);
@@ -371,7 +404,6 @@ const verifyEmailCode = async (req, res) => {
   }
 };
 
-// CHANGED: from exports.getAllHostApplications to const getAllHostApplications
 const getAllHostApplications = async (req, res) => {
   try {
     const snapshot = await db.collection('hostApplications').where('status', '==', 'pending').get();
@@ -385,7 +417,6 @@ const getAllHostApplications = async (req, res) => {
   }
 };
 
-// CHANGED: from exports.approveHostApplication to const approveHostApplication
 const approveHostApplication = async (req, res) => {
   try {
     const { applicationId, userId } = req.body;
@@ -394,7 +425,7 @@ const approveHostApplication = async (req, res) => {
     
     await db.collection('users').doc(userId).update({ role: 'owner', isApprovedToDrive: true });
     
-    await admin.auth().setCustomUserClaims(userId, { role: 'owner' });
+    await getAuth().setCustomUserClaims(userId, { role: 'owner' });
 
     log(`Host application ${applicationId} for user ${userId} approved.`);
     res.status(200).json({ message: 'Host application approved successfully.' });
@@ -404,7 +435,6 @@ const approveHostApplication = async (req, res) => {
   }
 };
 
-// CHANGED: from exports.declineHostApplication to const declineHostApplication
 const declineHostApplication = async (req, res) => {
   try {
     const { applicationId } = req.body;
@@ -418,10 +448,9 @@ const declineHostApplication = async (req, res) => {
   }
 };
 
-// CHANGED: from exports.toggleFavoriteVehicle to const toggleFavoriteVehicle
 const toggleFavoriteVehicle = async (req, res) => {
     const { vehicleId } = req.body;
-    const userId = req.customUser.uid; // From authMiddleware
+    const userId = req.customUser.uid; 
 
     if (!vehicleId) {
         return res.status(400).json({ message: 'Vehicle ID is required.' });
@@ -459,18 +488,16 @@ const toggleFavoriteVehicle = async (req, res) => {
     }
 };
 
-// CHANGED: from exports.updateUserBlockStatus to const updateUserBlockStatus
 const updateUserBlockStatus = async (req, res) => {
   try {
-    const { userId } = req.params; // Get user ID from URL
-    const { isBlocked } = req.body; // Get { isBlocked: true/false } from body
-    const adminUserId = req.customUser.uid; // Get admin's ID for logging
+    const { userId } = req.params;
+    const { isBlocked } = req.body;
+    const adminUserId = req.customUser.uid;
 
     if (typeof isBlocked !== 'boolean') {
       return res.status(400).json({ message: 'Invalid "isBlocked" value. Must be true or false.' });
     }
 
-    // Optional: Prevent admin from blocking themselves
     if (userId === adminUserId) {
         return res.status(400).json({ message: 'Admin cannot block themselves.' });
     }
@@ -481,14 +508,12 @@ const updateUserBlockStatus = async (req, res) => {
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     });
 
-    // Optional: Force logout the blocked user
     if (isBlocked) {
         try {
-            await admin.auth().revokeRefreshTokens(userId);
+            await getAuth().revokeRefreshTokens(userId);
             log(`Revoked refresh tokens for blocked user ${userId}.`);
         } catch (revokeError) {
              console.error(`Failed to revoke refresh tokens for user ${userId}:`, revokeError.message);
-             // Don't fail the whole request, just log this
         }
     }
 

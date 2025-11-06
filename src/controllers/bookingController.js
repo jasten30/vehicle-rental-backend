@@ -2,6 +2,7 @@ const { admin, db, storageBucket } = require('../utils/firebase');
 const { createNotification } = require('../utils/notificationHelper'); 
 const { DateTime } = require('luxon');
 const PDFDocument = require('pdfkit'); // <-- This is required for PDF generation
+const path = require('path');
 
 // Helper function for consistent logging
 const log = (message) => {
@@ -1128,7 +1129,6 @@ const generateBookingContract = async (req, res) => {
     }
     const booking = bookingDoc.data();
     
-    // UPDATED: Renter can now download
     if (req.customUser.role !== 'admin' && userId !== booking.ownerId && userId !== booking.renterId) { 
         return res.status(403).json({ message: "Forbidden: You are not authorized to download this contract." });
     }
@@ -1140,10 +1140,10 @@ const generateBookingContract = async (req, res) => {
     ]);
     
     const owner = extractUserDetails(ownerDoc);
-    const renter = extractUserDetails(renterDoc); // <-- This now includes phoneNumber
+    const renter = extractUserDetails(renterDoc);
     const vehicle = vehicleDoc.exists ? vehicleDoc.data() : { make: 'N/A', model: 'N/A', year: 'N/A', plateNumber: 'N/A', vin: 'N/A' };
     
-    // Use Luxon for reliable date formatting
+    // --- Date and Text Formatting (No Changes) ---
     const startDate = convertToDate(booking.startDate);
     const endDate = convertToDate(booking.endDate);
     const formattedStartDate = startDate ? DateTime.fromJSDate(startDate).toLocaleString(DateTime.DATE_FULL) : 'N/A';
@@ -1157,7 +1157,6 @@ const generateBookingContract = async (req, res) => {
     const remainingBalance = booking.remainingBalance || 0;
     const downPayment = booking.downPayment || 0;
 
-    // Build Extensions Text
     let extensionsText = '--- EXTENSIONS ---\n\n';
     if (booking.extensions && booking.extensions.length > 0) {
         booking.extensions.forEach((ext, index) => {
@@ -1174,21 +1173,52 @@ const generateBookingContract = async (req, res) => {
     } else {
         extensionsText = 'No extensions applied to this booking.\n';
     }
+    // --- End Formatting ---
 
     // --- PDF Generation Logic ---
-    const doc = new PDFDocument({ margin: 50 });
-    const filename = `BookingContract-${bookingId}.pdf`; // <-- Set .pdf filename
+    // *** CHANGED: Reduced margin from 50 to 40 ***
+    const doc = new PDFDocument({ margin: 40 });
+    const filename = `BookingContract-${bookingId}.pdf`;
 
     // Set response headers
-    res.setHeader('Content-Type', 'application/pdf'); // <-- Set PDF content type
+    res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
     // Pipe the PDF content to the response
     doc.pipe(res);
 
+    // --- === ADDED: PLACE LOGO AT TOP-CENTER === ---
+    try {
+      const imagePath = path.join(__dirname, '../assets/rentcycle_logo.png');
+      
+      // *** ADDED: Log the path to the server console for debugging ***
+      console.log('[Contract Logo] Trying to load logo from:', imagePath);
+
+      const logoWidth = 150; 
+      const logoX = (doc.page.width - logoWidth) / 2;
+      
+      doc.image(imagePath, logoX, 35, { // 35px from the top
+          width: logoWidth,
+      });
+
+      // *** CHANGED: Reduced space from 3 to 2 ***
+      doc.moveDown(2); 
+
+    } catch (imageError) {
+      // *** ADDED: Better error logging ***
+      console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+      console.error("[Contract Logo] FAILED TO LOAD LOGO IMAGE:", imageError.message);
+      console.error("Check if the file exists at the path above.");
+      console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+      // If logo fails, just add extra space and continue
+      doc.moveDown(3);
+    }
+    // --- === END OF LOGO CODE === ---
+
     // --- Add Content to the PDF ---
     doc.fontSize(18).font('Helvetica-Bold').text('CAR RENTAL AGREEMENT', { align: 'center' });
-    doc.moveDown(2);
+    // *** CHANGED: Reduced space from 2 to 1.5 ***
+    doc.moveDown(1.5);
 
     doc.fontSize(10).font('Helvetica-Bold').text('Lessor (Owner): ', { continued: true }).font('Helvetica').text(owner.name);
     doc.font('Helvetica-Bold').text('Lessee (Renter): ', { continued: true }).font('Helvetica').text(renter.name);
@@ -1197,13 +1227,15 @@ const generateBookingContract = async (req, res) => {
     doc.font('Helvetica-Bold').text('Vehicle Details:', { underline: true });
     doc.font('Helvetica').text(`Make/Model: ${vehicle.make} ${vehicle.model}`);
     doc.text(`Plate Number: ${vehicle.cor?.plateNumber || vehicle.plateNumber || 'N/A'}`);
-    doc.moveDown(2);
+    // *** CHANGED: Reduced space from 2 to 1.5 ***
+    doc.moveDown(1.5);
 
     doc.fontSize(12).font('Helvetica-Bold').text('TERMS', { underline: true });
     doc.moveDown();
 
     // Use .list() for numbered items
-    doc.fontSize(10).font('Helvetica').list([
+    // *** CHANGED: Font size from 10 to 9 ***
+    doc.fontSize(9).font('Helvetica').list([
       'The Renter agrees to return the vehicle by the specified Final Return date and time.',
       'The vehicle is to be returned in the same condition it was received, ordinary wear and tear excepted.',
       'The Renter is responsible for any fines, tolls, or damages incurred during the rental period.',
@@ -1224,17 +1256,20 @@ const generateBookingContract = async (req, res) => {
       textIndent: 10,
     });
 
-    doc.moveDown(3);
+    // *** CHANGED: Reduced space from 3 to 2 ***
+    doc.moveDown(2);
 
     doc.fontSize(12).font('Helvetica-Bold').text('ACKNOWLEDGMENT AND SIGNATURES', { underline: true });
     doc.moveDown();
 
+    // *** CHANGED: Set font size back to 10 for signatures ***
     doc.fontSize(10).font('Helvetica');
     doc.text(`Renter's Name: ${renter.name}`);
     doc.text(`Contact Number: ${renter.phoneNumber}`);
     doc.text('Signature of Renter: ____________________________');
     doc.text(`Date: ${formattedSignatureDate}`); // Pre-fill the date
-    doc.moveDown(2);
+    // *** CHANGED: Reduced space from 2 to 1.5 ***
+    doc.moveDown(1.5);
 
     doc.text(`Owner's Name: ${owner.name}`);
     doc.text('Signature of Owner: ____________________________');
@@ -1245,9 +1280,10 @@ const generateBookingContract = async (req, res) => {
     
   } catch (error) {
     console.error(`Error generating contract for ${req.params.bookingId}:`, error);
-    // Check if headers were already sent
     if (!res.headersSent) {
-       res.status(500).json({ message: "Server error generating contract." });
+        res.status(500).json({ message: "Server error generating contract." });
+    } else {
+        res.end();
     }
   }
 };

@@ -5,6 +5,7 @@ const axios = require('axios');
  * Helper function to upload a Base64 image to Firebase Storage.
  * Handles both new Base64 uploads and existing URLs.
  */
+// ... (uploadBase64Image function - no changes) ...
 const uploadBase64Image = async (base64String, folderName = 'vehicle_images') => {
   if (!base64String || !base64String.startsWith('data:image/')) {
     return base64String;
@@ -38,6 +39,7 @@ const uploadBase64Image = async (base64String, folderName = 'vehicle_images') =>
  * Helper function to extract the storage path from a public Google URL.
  * e.g., https://storage.googleapis.com/bucket-name/o/vehicles%2F... -> vehicles/...
  */
+// ... (extractStoragePath function - no changes) ...
 const extractStoragePath = (url) => {
     if (!url || !url.includes(storageBucket.name)) return null;
     try {
@@ -57,6 +59,7 @@ const extractStoragePath = (url) => {
 /**
  * Helper function to geocode a location object using Nominatim.
  */
+// ... (geocodeLocation function - no changes) ...
 const geocodeLocation = async (location) => {
   if (!location || !location.city || !location.country) {
     return null;
@@ -94,6 +97,7 @@ const geocodeLocation = async (location) => {
 /**
  * Get all vehicles, potentially enriching with owner data.
  */
+// ... (getAllVehicles function - no changes) ...
 const getAllVehicles = async (req, res) => {
   try {
     const vehiclesSnapshot = await db.collection('vehicles').get();
@@ -153,6 +157,7 @@ const getAllVehicles = async (req, res) => {
 /**
  * Get a single vehicle by ID, converting Timestamps for frontend.
  */
+// ... (getVehicleById function - no changes) ...
 const getVehicleById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -195,6 +200,7 @@ const getVehicleById = async (req, res) => {
 /**
  * Add a new vehicle, handling image uploads and data conversions.
  */
+// ... (addVehicle function - no changes) ...
 const addVehicle = async (req, res) => {
   try {
     const vehicleData = req.body;
@@ -284,6 +290,7 @@ const addVehicle = async (req, res) => {
 /**
  * Update an existing vehicle, handling image uploads and data conversions.
  */
+// ... (updateVehicle function - no changes) ...
 const updateVehicle = async (req, res) => {
   try {
     const { id } = req.params;
@@ -305,8 +312,6 @@ const updateVehicle = async (req, res) => {
 
     const cleanUpdates = { ...updates };
     // --- Image Uploads ---
-    // NOTE: This logic doesn't delete old images on replace. 
-    // Consider adding that if storage cleanup is needed during updates.
     if (cleanUpdates.cor?.corImage?.startsWith('data:image')) { cleanUpdates.cor.corImage = await uploadBase64Image(cleanUpdates.cor.corImage, `${folderPath}/documents`); }
     const orImageBase64 = cleanUpdates.or?.orImage || cleanUpdates.or?.orImageUrl;
     if (orImageBase64?.startsWith('data:image')) {
@@ -391,6 +396,7 @@ const updateVehicle = async (req, res) => {
 /**
  * Delete a vehicle. Includes logic for deleting associated storage files.
  */
+// ... (deleteVehicle function - no changes) ...
 const deleteVehicle = async (req, res) => {
   try {
     const { id } = req.params;
@@ -450,6 +456,7 @@ const deleteVehicle = async (req, res) => {
 /**
  * Get vehicles listed by the currently authenticated owner.
  */
+// ... (getVehiclesByOwner function - no changes) ...
 const getVehiclesByOwner = async (req, res) => {
   try {
     const ownerId = req.customUser.uid;
@@ -487,6 +494,49 @@ const getVehiclesByOwner = async (req, res) => {
   }
 };
 
+// ================================================
+//  NEW FUNCTION
+// ================================================
+/**
+ * Get all vehicles listed by a *specific* owner ID (public).
+ */
+const getPublicVehiclesByOwner = async (req, res) => {
+  try {
+    const { userId } = req.params; // Get ID from URL parameter
+    if (!userId) {
+      return res.status(400).json({ message: 'User ID is required.' });
+    }
+
+    const vehiclesRef = db.collection('vehicles');
+    const snapshot = await vehiclesRef.where('ownerId', '==', userId).get();
+
+    if (snapshot.empty) {
+      return res.status(200).json([]);
+    }
+
+    // This is a simplified version, no need to convert dates for a card
+    const vehicles = snapshot.docs.map(doc => {
+      const data = doc.data();
+      return {
+          id: doc.id,
+          make: data.make,
+          model: data.model,
+          year: data.year,
+          rentalPricePerDay: data.rentalPricePerDay,
+          location: data.location,
+          profilePhotoUrl: data.profilePhotoUrl,
+          exteriorPhotos: data.exteriorPhotos,
+          assetType: data.assetType || 'vehicle' // Default to vehicle
+      };
+    });
+    res.status(200).json(vehicles);
+  } catch (error) {
+    console.error(`[VehicleController][getPublicVehiclesByOwner] Error fetching vehicles for owner ${req.params.userId}:`, error);
+    res.status(500).json({ message: 'Error fetching owner vehicles.', error: error.message });
+  }
+};
+// ================================================
+
 
 module.exports = {
   getAllVehicles,
@@ -495,5 +545,5 @@ module.exports = {
   updateVehicle,
   deleteVehicle,
   getVehiclesByOwner,
+  getPublicVehiclesByOwner, // --- ADD THIS TO EXPORTS ---
 };
-

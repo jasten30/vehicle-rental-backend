@@ -1,6 +1,7 @@
 const admin = require('firebase-admin');
+const { getAuth } = require('firebase-admin/auth');
 const { hashPassword, comparePasswords } = require('../utils/passwordUtil');
-const { sendVerificationEmail } = require('../utils/emailService');
+const { sendVerificationEmail, sendPasswordResetEmail } = require('../utils/emailService');
 
 const log = (message) => {
   console.log(`[AuthController] ${message}`);
@@ -36,12 +37,12 @@ const register = async (req, res) => {
       lastName: lastName,
       name: `${firstName} ${lastName}`,
       role: defaultRole,
-      passwordHash: await hashPassword(password),
+      passwordHash: await hashPassword(password), // This is now just for fallback/migration
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       emailVerified: false,
-      isMobileVerified: true, // Assuming this is your intended logic
-      favorites: [], // 👈 ADDED: Initialize empty favorites array
-      isBlocked: false, // 👈 ADDED: Initialize block status
+      isMobileVerified: true, 
+      favorites: [], 
+      isBlocked: false,
     });
 
     const customToken = await admin.auth().createCustomToken(userRecord.uid);
@@ -64,78 +65,64 @@ const register = async (req, res) => {
   }
 };
 
+// --- !! COMPLETELY UPDATED LOGIN FUNCTION !! ---
 const login = async (req, res) => {
-  const { email, password } = req.body;
-  log(`Login attempt for email: ${email}`);
-  if (!email || !password) {
-    log('Login failed: Email and password are required.');
-    return res.status(400).json({ message: 'Email and password are required.' });
+  const { idToken } = req.body; // Expect an ID Token, not email/password
+  log(`Login attempt with ID Token...`);
+  
+  if (!idToken) {
+    log('Login failed: ID Token is required.');
+    return res.status(400).json({ message: 'ID Token is required.' });
   }
+
   try {
-    const userRecord = await admin.auth().getUserByEmail(email);
-    log(`Found user record for ${email}. UID: ${userRecord.uid}`);
-    const userDoc = await admin
-      .firestore()
-      .collection('users')
-      .doc(userRecord.uid)
-      .get();
+    // 1. Verify the ID Token from the frontend
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    const uid = decodedToken.uid;
+    log(`ID Token verified for UID: ${uid}`);
+
+    // 2. Get user data from Firestore
+    const userDoc = await admin.firestore().collection('users').doc(uid).get();
     if (!userDoc.exists) {
-      log(`Firestore user document not found for UID: ${userRecord.uid}`);
+      log(`Firestore user document not found for UID: ${uid}`);
       return res.status(404).json({ message: 'User data not found.' });
     }
-
     const userData = userDoc.data();
 
-    // 👇 ADDED: Block check
+    // 3. Check if user is blocked
     if (userData.isBlocked === true) {
-        log(`Login failed: User ${userRecord.uid} is blocked.`);
+        log(`Login failed: User ${uid} is blocked.`);
         return res.status(403).json({ message: 'Your account has been restricted. Please contact support.' });
     }
-    // --- END BLOCK CHECK ---
-
-    const storedPasswordHash = userData.passwordHash;
-    if (!storedPasswordHash) {
-      log(`No password hash found in Firestore for UID: ${userRecord.uid}.`);
-      return res
-        .status(500)
-        .json({ message: 'Server configuration error: Password hash missing.' });
-    }
-    const passwordMatch = await comparePasswords(password, storedPasswordHash);
-    log(`Password comparison result: ${passwordMatch}`);
-    if (!passwordMatch) {
-      log('Login failed: Invalid credentials (password mismatch).');
-      return res.status(401).json({ message: 'Invalid credentials.' });
-    }
+    
+    // 4. Create a new *Custom* Token that includes their role
+    // This allows your frontend Firebase instance to know their role
     const customToken = await admin
       .auth()
-      .createCustomToken(userRecord.uid, { role: userData.role });
-    log(`Custom token created for UID: ${userRecord.uid}`);
+      .createCustomToken(uid, { role: userData.role });
+    
+    log(`Custom token created for UID: ${uid}`);
     res.status(200).json({
       message: 'Login successful!',
-      token: customToken,
-      user: {
-        uid: userRecord.uid,
-        email: userRecord.email,
-        role: userData.role,
-        displayName: userData.displayName || null,
-        favorites: userData.favorites || [], // 👈 ADDED: Send favorites list
-      },
+      token: customToken, // Send the new custom token back
     });
+
   } catch (error) {
     console.error('Error during login:', error.code, error.message);
     let errorMessage = 'Server error during login.';
-    if (
-      error.code === 'auth/user-not-found' ||
-      error.code === 'auth/invalid-email' ||
-      error.code === 'auth/wrong-password'
-    ) {
-      errorMessage = 'Invalid credentials.';
+    if (error.code === 'auth/id-token-expired') {
+      errorMessage = 'Login session expired. Please sign in again.';
+    } else if (error.code === 'auth/id-token-revoked') {
+      errorMessage = 'Your account session has been revoked. Please sign in again.';
     }
     res.status(500).json({ message: errorMessage, error: error.message });
   }
 };
+// --- !! END UPDATED LOGIN FUNCTION !! ---
+
 
 const tokenLogin = async (req, res) => {
+  // This function is now very similar to login, but is used by initializeAuth
   try {
     const { uid } = req.customUser;
     log(`Token login attempt for UID: ${uid}`);
@@ -147,13 +134,12 @@ const tokenLogin = async (req, res) => {
     
     const userData = userDoc.data();
 
-    // 👇 ADDED: Block check (optional, but good for token re-auth)
     if (userData.isBlocked === true) {
         log(`Token login failed: User ${uid} is blocked.`);
         return res.status(403).json({ message: 'Your account has been restricted.' });
     }
-    // --- END BLOCK CHECK ---
     
+    // Create a new custom token with the user's role
     const customToken = await admin.auth().createCustomToken(uid, { role: userData.role });
     
     log(`Custom token created for UID: ${uid}`);
@@ -168,6 +154,7 @@ const tokenLogin = async (req, res) => {
 };
 
 const reauthenticateWithPassword = async (req, res) => {
+  // This function remains unchanged and will work fine
   try {
     const { password } = req.body;
     const { uid } = req.customUser;
@@ -177,6 +164,7 @@ const reauthenticateWithPassword = async (req, res) => {
       return res.status(404).json({ message: 'User data not found.' });
     }
 
+    // We still check the Firestore hash here for re-authentication
     const passwordMatch = await comparePasswords(password, userDoc.data().passwordHash);
     
     if (!passwordMatch) {
@@ -190,9 +178,38 @@ const reauthenticateWithPassword = async (req, res) => {
   }
 };
 
+const forgotPassword = async (req, res) => {
+  // This function is correct as-is
+  const { email } = req.body;
+  if (!email) {
+    return res.status(400).json({ message: 'Email is required.' });
+  }
+
+  try {
+    const user = await getAuth().getUserByEmail(email);
+    if (!user) {
+        return res.status(200).json({ message: 'If this email is registered, a reset link will be sent.' });
+    }
+
+    const resetLink = await getAuth().generatePasswordResetLink(email);
+    
+    await sendPasswordResetEmail(email, resetLink);
+    
+    res.status(200).json({ message: 'Password reset link sent! Please check your email.' });
+  
+  } catch (error) {
+    if (error.code === 'auth/user-not-found') {
+        return res.status(200).json({ message: 'If this email is registered, a reset link will be sent.' });
+    }
+    console.error('[authController] Error generating password reset link:', error);
+    res.status(500).json({ message: 'Server error.', error: error.message });
+  }
+};
+
 module.exports = {
   register,
   login,
   tokenLogin,
   reauthenticateWithPassword,
+  forgotPassword,
 };

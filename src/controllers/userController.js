@@ -6,9 +6,7 @@ const log = (message, data = '') => {
   console.log(`[UserController] ${message}`, data);
 };
 
-// =============================================================
-// HELPER FUNCTION (Copied from vehicleController)
-// =============================================================
+
 const uploadBase64Image = async (base64String, folderName) => {
   if (!base64String || !base64String.startsWith('data:image/')) {
     // If it's already a URL, just return it.

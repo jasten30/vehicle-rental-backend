@@ -1,5 +1,3 @@
-// src/routes/authRoutes.js
-
 const express = require('express');
 const router = express.Router();
 const authController = require('../controllers/authController');
@@ -11,6 +9,10 @@ router.post('/register', authController.register);
 
 // POST /api/auth/login - User login ---
 router.post('/login', authController.login);
+
+// --- ADD THIS ROUTE ---
+router.post('/forgot-password', authController.forgotPassword);
+// --- END ADD ---
 
 // Route for token-based login (used for phone auth)
 router.post('/token-login', authMiddleware.verifyToken, authController.tokenLogin);

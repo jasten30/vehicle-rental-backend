@@ -1,11 +1,11 @@
 const nodemailer = require('nodemailer');
 
-
+// Configure the email transporter using your email service's credentials
 const transporter = nodemailer.createTransport({
-  service: 'gmail', 
+  service: 'gmail', // Or another service like 'SendGrid'
   auth: {
-    user: 'rentcycleplatform@gmail.com', 
-    pass: 'wonu xqaa eyry ysxo',   
+    user: 'rentcycleplatform@gmail.com', // Your email address
+    pass: 'wonu xqaa eyry ysxo',   // Your email's "App Password" (not your regular password)
   },
 });
 
@@ -41,7 +41,7 @@ const sendVerificationEmail = async (userEmail, verificationCode) => {
   }
 };
 
-// --- NEW FUNCTION ADDED ---
+
 /**
  * Sends a password reset link to a user.
  * @param {string} to - The recipient's email address.
@@ -76,7 +76,47 @@ const sendPasswordResetEmail = async (to, link) => {
 
 
 
+/**
+ * Sends a contact form submission to the admin email.
+ * @param {object} formData - The form data { name, email, subject, message }
+ */
+const sendContactFormEmail = async (formData) => {
+  const { name, email, subject, message } = formData;
+  
+  const mailOptions = {
+    from: `"RentCycle Contact Form" <${process.env.EMAIL_USER || 'rentcycleplatform@gmail.com'}>`,
+    to: 'rentcycleplatform@gmail.com', // Your admin email
+    subject: `New Contact Form Submission: ${subject}`,
+    replyTo: email, // Set the 'reply-to' to the user's email
+    text: `You have a new message from ${name} (${email}).\n\nSubject: ${subject}\n\nMessage:\n${message}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">
+        <h2 style="color: #333;">New Contact Form Message</h2>
+        <p style="font-size: 16px;">You have a new message from <strong>${name}</strong> (${email}).</p>
+        <hr style="border: 0; border-top: 1px solid #eee;">
+        <h3 style="color: #555;">Subject: ${subject}</h3>
+        <p style="font-size: 16px; line-height: 1.6; background: #f9f9f9; padding: 15px; border-radius: 5px;">
+          ${message.replace(/\n/g, '<br>')}
+        </p>
+        <hr style="border: 0; border-top: 1px solid #eee;">
+        <p style="font-size: 14px; color: #777;">You can reply directly to this email to contact the user.</p>
+      </div>
+    `,
+  };
+
+   try {
+    await transporter.sendMail(mailOptions);
+    console.log(`[EmailService] Contact form email sent successfully from ${email}`);
+  } catch (error) {
+    console.error(`[EmailService] Error sending contact form email:`, error);
+    throw new Error('Failed to send contact form email.');
+  }
+};
+
+
+
 module.exports = {
   sendVerificationEmail,
   sendPasswordResetEmail, 
+  sendContactFormEmail, 
 };

@@ -1,7 +1,8 @@
 const admin = require('firebase-admin');
 const { getAuth } = require('firebase-admin/auth');
 const { hashPassword, comparePasswords } = require('../utils/passwordUtil');
-const { sendVerificationEmail, sendPasswordResetEmail } = require('../utils/emailService');
+// UPDATED: Import all necessary email functions
+const { sendVerificationEmail, sendPasswordResetEmail, sendContactFormEmail } = require('../utils/emailService');
 
 const log = (message) => {
   console.log(`[AuthController] ${message}`);
@@ -206,10 +207,32 @@ const forgotPassword = async (req, res) => {
   }
 };
 
+
+const handleContactForm = async (req, res) => {
+  try {
+    const { name, email, subject, message } = req.body;
+
+    if (!name || !email || !subject || !message) {
+      return res.status(400).json({ message: 'All form fields are required.' });
+    }
+
+    // Forward the form data to the email service
+    await sendContactFormEmail({ name, email, subject, message });
+
+    res.status(200).json({ message: 'Message sent successfully.' });
+  } catch (error) {
+    console.error('[AuthController] Error handling contact form:', error);
+    res.status(500).json({ message: 'Server error: Could not send message.' });
+  }
+};
+
+
+
 module.exports = {
   register,
   login,
   tokenLogin,
   reauthenticateWithPassword,
   forgotPassword,
+  handleContactForm, 
 };

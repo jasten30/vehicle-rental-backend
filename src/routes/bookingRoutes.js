@@ -101,7 +101,7 @@ router.put(
 router.post(
     '/:bookingId/confirm-downpayment-by-user',
     authMiddleware.verifyToken,
-    authMiddleware.authorizeRole(['renter']),
+    authMiddleware.authorizeRole(['renter', 'owner']),
     bookingController.confirmDownpaymentByUser
 );
 

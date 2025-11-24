@@ -1187,11 +1187,9 @@ const generateBookingContract = async (req, res) => {
     // Pipe the PDF content to the response
     doc.pipe(res);
 
-    // --- === ADDED: PLACE LOGO AT TOP-CENTER === ---
     try {
       const imagePath = path.join(__dirname, '../assets/rentcycle_logo.png');
       
-      // *** ADDED: Log the path to the server console for debugging ***
       console.log('[Contract Logo] Trying to load logo from:', imagePath);
 
       const logoWidth = 150; 
@@ -1201,7 +1199,6 @@ const generateBookingContract = async (req, res) => {
           width: logoWidth,
       });
 
-      // *** CHANGED: Reduced space from 3 to 2 ***
       doc.moveDown(2); 
 
     } catch (imageError) {
@@ -1287,11 +1284,7 @@ const generateBookingContract = async (req, res) => {
     }
   }
 };
-// ================================================
 
-// ================================================
-//  NEW FUNCTION FOR CRON JOB
-// ================================================
 const autoHandleOverdueBookings = async () => {
   log('Running cron job: autoHandleOverdueBookings...');
   const now = new Date(); // The current time
@@ -1356,6 +1349,98 @@ const autoHandleOverdueBookings = async () => {
   }
 };
 
+// 1. GET ALL FEES (For Admin)
+const getAllPlatformFees = async (req, res) => {
+  try {
+    const feesSnapshot = await db.collection('platform_fees')
+      .orderBy('submittedAt', 'desc')
+      .get();
+
+    const fees = feesSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      submittedAt: convertToDate(doc.data().submittedAt)?.toISOString()
+    }));
+
+    res.status(200).json(fees);
+  } catch (error) {
+    console.error('[BookingController] Error fetching all fees:', error);
+    res.status(500).json({ message: 'Error fetching fees.' });
+  }
+};
+
+// 2. GET OWNER FEES (For Owner Dashboard)
+const getOwnerPlatformFees = async (req, res) => {
+  try {
+    const ownerId = req.customUser.uid;
+    // Note: If you get an index error, remove the .orderBy until you create the index
+    const feesSnapshot = await db.collection('platform_fees')
+      .where('ownerId', '==', ownerId)
+      .get();
+
+    const fees = feesSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
+
+    res.status(200).json(fees);
+  } catch (error) {
+    console.error('[BookingController] Error fetching owner fees:', error);
+    res.status(500).json({ message: 'Error fetching your fees.' });
+  }
+};
+
+// 3. SUBMIT FEE (Owner Action)
+const submitPlatformFeePayment = async (req, res) => {
+  try {
+    const { month, year, amount, referenceNumber } = req.body;
+    const ownerId = req.customUser.uid;
+    const userDoc = await db.collection('users').doc(ownerId).get();
+    const userData = userDoc.exists ? userDoc.data() : {};
+
+    if (!month || !year || !amount || !referenceNumber) {
+       return res.status(400).json({ message: 'Missing required fields.' });
+    }
+
+    const feeRecord = {
+      ownerId,
+      hostName: `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || 'Unknown',
+      hostEmail: userData.email || 'N/A',
+      month,
+      year: parseInt(year),
+      amount: parseFloat(amount),
+      referenceNumber,
+      status: 'pending', // Default status
+      submittedAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    const docRef = await db.collection('platform_fees').add(feeRecord);
+
+    log(`Platform fee submitted by ${ownerId} for ${month} ${year}.`);
+    res.status(201).json({ message: 'Payment submitted successfully.', id: docRef.id });
+  } catch (error) {
+    console.error('[BookingController] Error submitting fee:', error);
+    res.status(500).json({ message: 'Server error submitting payment.' });
+  }
+};
+
+// 4. VERIFY FEE (Admin Action)
+const verifyPlatformFee = async (req, res) => {
+  try {
+    const { feeId } = req.params;
+    
+    await db.collection('platform_fees').doc(feeId).update({
+      status: 'verified',
+      verifiedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
+
+    log(`Fee ${feeId} verified by admin.`);
+    res.status(200).json({ message: 'Fee verified successfully.' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error verifying fee.', error: error.message });
+  }
+};
+
 
 module.exports = {
   getAllBookings,
@@ -1380,4 +1465,8 @@ module.exports = {
   deferExtensionPayment,
   generateBookingContract,
   autoHandleOverdueBookings,
+  getAllPlatformFees,
+  getOwnerPlatformFees,
+  submitPlatformFeePayment,
+  verifyPlatformFee
 };

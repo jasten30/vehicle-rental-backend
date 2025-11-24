@@ -4,7 +4,11 @@ const router = express.Router();
 const bookingController = require('../controllers/bookingController');
 const authMiddleware = require('../middleware/authMiddleware');
 
-// --- Specific routes must come before generic routes with parameters ---
+// ==================================================================
+// SPECIFIC ROUTES (Must come BEFORE generic /:bookingId routes)
+// ==================================================================
+
+// --- ADMIN ROUTES ---
 
 router.get(
   '/all',
@@ -13,12 +17,48 @@ router.get(
   bookingController.getAllBookings
 );
 
+// NEW: Admin gets all platform fee records
+router.get(
+  '/admin/platform-fees',
+  authMiddleware.verifyToken,
+  authMiddleware.authorizeRole(['admin']),
+  bookingController.getAllPlatformFees
+);
+
+// NEW: Admin verifies a specific fee payment
+router.put(
+  '/admin/platform-fees/:feeId/verify',
+  authMiddleware.verifyToken,
+  authMiddleware.authorizeRole(['admin']),
+  bookingController.verifyPlatformFee
+);
+
+// --- OWNER ROUTES ---
+
 router.get(
   '/owner',
   authMiddleware.verifyToken,
   authMiddleware.authorizeRole(['owner', 'admin']),
   bookingController.getOwnerBookings
 );
+
+// NEW: Owner gets their own fee payment history
+router.get(
+  '/owner/my-fees',
+  authMiddleware.verifyToken,
+  authMiddleware.authorizeRole(['owner', 'admin']),
+  bookingController.getOwnerPlatformFees
+);
+
+// Existing: Owner submits a fee payment
+router.post(
+  '/pay-platform-fee',
+  authMiddleware.verifyToken,
+  authMiddleware.authorizeRole(['owner', 'admin']),
+  bookingController.submitPlatformFeePayment
+);
+
+// --- GENERAL/SHARED ROUTES ---
 
 router.get(
   '/user/:userId',
@@ -34,12 +74,14 @@ router.get(
 
 router.get(
   '/availability/:vehicleId',
-  authMiddleware.verifyToken, // Note: This check requires a renter role
-  authMiddleware.authorizeRole(['renter', 'owner']), // Added authorization
+  authMiddleware.verifyToken, 
+  authMiddleware.authorizeRole(['renter', 'owner']), 
   bookingController.apiCheckAvailability
 );
 
-// --- Generic routes with parameters should come last ---
+// ==================================================================
+// GENERIC ROUTES (Parameters like /:bookingId) - MUST BE LAST
+// ==================================================================
 
 router.get(
   '/:bookingId',
@@ -50,13 +92,13 @@ router.get(
 router.post(
   '/',
   authMiddleware.verifyToken,
-  authMiddleware.authorizeRole(['renter', 'owner']), // Only renters should create bookings
+  authMiddleware.authorizeRole(['renter', 'owner']),
   bookingController.createBooking
 );
 
 router.post(
   '/:bookingId/report',
-  authMiddleware.verifyToken, // Authorizes any logged-in user (renter or owner)
+  authMiddleware.verifyToken, 
   bookingController.submitBookingReport
 );
 

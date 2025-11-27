@@ -1,7 +1,7 @@
 const { admin, db, storageBucket } = require('../utils/firebase');
-const { createNotification } = require('../utils/notificationHelper'); 
+const { createNotification } = require('../utils/notificationHelper');
 const { DateTime } = require('luxon');
-const PDFDocument = require('pdfkit'); 
+const PDFDocument = require('pdfkit');
 const path = require('path');
 
 // Helper function for consistent logging
@@ -12,11 +12,11 @@ const log = (message) => {
 // Helper function to safely convert Firestore Timestamp or ISO string to Date object
 const convertToDate = (value) => {
   if (value instanceof admin.firestore.Timestamp) {
-    return value.toDate(); 
+    return value.toDate();
   }
   if (typeof value === 'string') {
     const dt = DateTime.fromISO(value, { zone: 'utc' });
-    return dt.isValid ? dt.toJSDate() : null; 
+    return dt.isValid ? dt.toJSDate() : null;
   }
   return null;
 };
@@ -44,10 +44,13 @@ const extractUserDetails = (userDoc) => {
 
 const getAllBookings = async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, limit } = req.query; // Added limit
     log('Fetching all bookings...');
 
     let bookingsQuery = db.collection('bookings');
+
+    // 1. Force Sort by CreatedAt (Newest First)
+    bookingsQuery = bookingsQuery.orderBy('createdAt', 'desc');
 
     if (startDate) {
       bookingsQuery = bookingsQuery.where('createdAt', '>=', new Date(startDate));
@@ -56,12 +59,17 @@ const getAllBookings = async (req, res) => {
       bookingsQuery = bookingsQuery.where('createdAt', '<=', new Date(endDate + 'T23:59:59'));
     }
 
+    // 2. Apply Limit (Default to 1000 if not provided, to catch older stuff like Sept)
+    const queryLimit = parseInt(limit) || 1000;
+    bookingsQuery = bookingsQuery.limit(queryLimit);
+
     const bookingsSnapshot = await bookingsQuery.get();
 
     if (bookingsSnapshot.empty) {
       return res.status(200).json([]);
     }
 
+    // ... (Rest of your existing logic for fetching vehicles/renters remains the same) ...
     const bookingsData = bookingsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 
     const vehicleIds = [...new Set(bookingsData.map((b) => b.vehicleId).filter(Boolean))];
@@ -84,6 +92,7 @@ const getAllBookings = async (req, res) => {
         endDate: convertToDate(booking.endDate)?.toISOString() || null,
         createdAt: convertToDate(booking.createdAt)?.toISOString() || null,
         vehicleName: vehicle ? `${vehicle.make} ${vehicle.model}` : 'Unknown Vehicle',
+        vehicleOwnerId: vehicle ? vehicle.ownerId : null, // <--- CRITICAL: Pass ownerId for calculation
         renterDetails: renter,
       };
     });
@@ -98,12 +107,12 @@ const getAllBookings = async (req, res) => {
 const createBooking = async (req, res) => {
   try {
     const { vehicleId, startDate, endDate } = req.body;
-    const renterId = req.customUser.uid; 
+    const renterId = req.customUser.uid;
 
     // --- 1. CHECK IF RENTER IS SUSPENDED ---
     if (req.customUser.isSuspended) {
-       return res.status(403).json({ 
-         message: 'Your account is suspended. You cannot create new bookings.' 
+       return res.status(403).json({
+         message: 'Your account is suspended. You cannot create new bookings.'
        });
     }
     // ---------------------------------------
@@ -126,12 +135,12 @@ const createBooking = async (req, res) => {
     }
     const vehicleData = vehicleDoc.data();
     const ownerId = vehicleData.ownerId;
-    
+
     // --- 2. CHECK IF OWNER IS SUSPENDED ---
     const ownerDoc = await db.collection('users').doc(ownerId).get();
     if (ownerDoc.exists && ownerDoc.data().isSuspended) {
-       return res.status(403).json({ 
-         message: 'This vehicle is temporarily unavailable for booking (Owner suspended).' 
+       return res.status(403).json({
+         message: 'This vehicle is temporarily unavailable for booking (Owner suspended).'
        });
     }
     // --------------------------------------
@@ -145,7 +154,7 @@ const createBooking = async (req, res) => {
     if (isNaN(rentalPricePerDay) || rentalPricePerDay <= 0) {
       return res.status(500).json({ message: 'Vehicle rental price is invalid or not set. Cannot create booking.' });
     }
-    
+
     const diffMilliseconds = end.getTime() - start.getTime();
     const diffHours = diffMilliseconds / (1000 * 60 * 60);
     const calculatedDays = Math.ceil(diffHours / 24);
@@ -193,14 +202,14 @@ const apiCheckAvailability = async (req, res) => {
   log(`Checking availability with query: ${JSON.stringify(req.query)}`);
   try {
     const { vehicleId } = req.params;
-    const { startDate, endDate } = req.query; 
-    const requesterId = req.customUser.uid; 
+    const { startDate, endDate } = req.query;
+    const requesterId = req.customUser.uid;
 
     // --- 1. CHECK IF RENTER IS SUSPENDED ---
     if (req.customUser.isSuspended) {
-        return res.status(403).json({ 
-             isAvailable: false, 
-             message: 'Your account is suspended. You cannot check availability or book vehicles.' 
+        return res.status(403).json({
+             isAvailable: false,
+             message: 'Your account is suspended. You cannot check availability or book vehicles.'
         });
     }
 
@@ -228,9 +237,9 @@ const apiCheckAvailability = async (req, res) => {
     // --- 2. CHECK IF OWNER IS SUSPENDED ---
     const ownerDoc = await db.collection('users').doc(ownerId).get();
     if (ownerDoc.exists && ownerDoc.data().isSuspended) {
-         return res.status(403).json({ 
-             isAvailable: false, 
-             message: 'This vehicle is temporarily unavailable for booking (Owner suspended).' 
+         return res.status(403).json({
+             isAvailable: false,
+             message: 'This vehicle is temporarily unavailable for booking (Owner suspended).'
          });
     }
 
@@ -238,7 +247,7 @@ const apiCheckAvailability = async (req, res) => {
       log(`Owner ${requesterId} blocked from checking availability on their own vehicle ${vehicleId}`);
       return res.status(403).json({ isAvailable: false, message: 'You cannot book your own vehicle.' });
     }
-    
+
     const unavailablePeriods = vehicleData.availability || [];
     for (const period of unavailablePeriods) {
       const periodStart = convertToDate(period.start);
@@ -315,7 +324,7 @@ const getBookingsByUser = async (req, res) => {
       const bookingData = doc.data();
       const vehicleDoc = await db.collection('vehicles').doc(bookingData.vehicleId).get();
       const renterDoc = await db.collection('users').doc(bookingData.renterId).get();
-      
+
       return {
         id: doc.id,
         ...bookingData,
@@ -372,19 +381,19 @@ const getBookingById = async (req, res) => {
     }
 
     const bookingData = bookingDoc.data();
-    
+
     const [vehicleDoc, renterDoc] = await Promise.all([
         db.collection('vehicles').doc(bookingData.vehicleId).get(),
         db.collection('users').doc(bookingData.renterId).get()
     ]);
-    
+
     const vehicleData = vehicleDoc.exists ? vehicleDoc.data() : null;
-    
+
     let ownerDoc = null;
     if (vehicleData && vehicleData.ownerId) {
         ownerDoc = await db.collection('users').doc(vehicleData.ownerId).get();
     }
-    
+
     const requesterId = req.customUser.uid;
     const requesterRole = req.customUser.role;
     if (requesterRole !== 'admin' && requesterId !== bookingData.renterId && requesterId !== (vehicleData ? vehicleData.ownerId : null)) {
@@ -399,7 +408,7 @@ const getBookingById = async (req, res) => {
       createdAt: convertToDate(bookingData.createdAt)?.toISOString() || null,
       vehicleDetails: vehicleData,
       renterDetails: extractUserDetails(renterDoc),
-      ownerDetails: extractUserDetails(ownerDoc), 
+      ownerDetails: extractUserDetails(ownerDoc),
     });
   } catch (error) {
     console.error(`Error fetching booking by ID ${req.params.bookingId}:`, error);
@@ -424,11 +433,11 @@ const approveBooking = async (req, res) => {
     if (approverRole !== 'admin' && approverId !== bookingData.ownerId) {
         return res.status(403).json({ message: 'You are not authorized to approve this booking.' });
     }
-    
+
     if (bookingData.paymentStatus !== 'pending_owner_approval') {
         return res.status(400).json({ message: `This booking is not pending approval. Current status: ${bookingData.paymentStatus}` });
     }
-    
+
     await bookingRef.update({
       paymentStatus: 'pending_payment',
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -464,7 +473,7 @@ const declineBooking = async (req, res) => {
     if (approverRole !== 'admin' && declinerId !== bookingData.ownerId) {
         return res.status(403).json({ message: 'You are not authorized to decline this booking.' });
     }
-    
+
     await bookingRef.update({
       paymentStatus: 'declined_by_owner',
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -521,7 +530,7 @@ const confirmDownpaymentByUser = async (req, res) => {
           `Renter submitted payment (Ref: ${referenceNumber}) for booking #${bookingId.substring(0, 5)}. Please verify.`,
           `/dashboard/my-bookings/${bookingId}`
         );
-        
+
         log(`Downpayment for booking ${bookingId} confirmed by user. Ref: ${referenceNumber}. Awaiting owner verification.`);
         res.status(200).json({ message: 'Payment submitted for verification.' });
 
@@ -539,7 +548,7 @@ const confirmBookingPayment = async (req, res) => {
     let renterIdToNotify;
 
     const bookingRef = db.collection('bookings').doc(bookingId);
-    
+
     await db.runTransaction(async (transaction) => {
       const bookingDoc = await transaction.get(bookingRef);
       if (!bookingDoc.exists) throw new Error('Booking not found.');
@@ -549,7 +558,7 @@ const confirmBookingPayment = async (req, res) => {
       const vehicleRef = db.collection('vehicles').doc(bookingData.vehicleId);
       const vehicleDoc = await transaction.get(vehicleRef);
       if (!vehicleDoc.exists) throw new Error('Associated vehicle not found.');
-      
+
       if (approverRole !== 'admin' && approverId !== bookingData.ownerId) {
         throw new Error('You are not authorized to confirm payments for this booking.');
       }
@@ -573,7 +582,7 @@ const confirmBookingPayment = async (req, res) => {
         amountPaid: bookingData.downPayment,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
-      
+
       const chatRef = db.collection('chats').doc(bookingId);
       transaction.set(chatRef, {
         bookingId: bookingId,
@@ -599,7 +608,7 @@ const confirmBookingPayment = async (req, res) => {
     }
 
     log(`Booking ${bookingId} downpayment confirmed and finalized by owner ${approverId}.`);
-    res.status(200).json({ 
+    res.status(200).json({
       message: 'Downpayment confirmed. Booking is now finalized, chat created, and calendar updated.'
     });
 
@@ -626,7 +635,7 @@ const confirmOwnerPayment = async (req, res) => {
         if (verifierRole !== 'admin' && verifierId !== bookingData.ownerId) {
             return res.status(403).json({ message: 'You are not authorized to verify this payment.' });
         }
-        
+
         if (bookingData.paymentStatus !== 'downpayment_pending_verification') {
             return res.status(400).json({ message: `Booking is not awaiting verification. Current status: ${bookingData.paymentStatus}` });
         }
@@ -635,7 +644,7 @@ const confirmOwnerPayment = async (req, res) => {
             paymentStatus: 'downpayment_verified',
             updatedAt: admin.firestore.FieldValue.serverTimestamp(),
         });
-        
+
         log(`Downpayment for booking ${bookingId} was verified by owner ${verifierId}.`);
         res.status(200).json({ message: 'Payment successfully verified.' });
     } catch (error) {
@@ -669,7 +678,7 @@ const getOwnerBookings = async (req, res) => {
         const renterIds = [...new Set(bookingsData.map(b => b.renterId).filter(Boolean))];
         const renterPromises = renterIds.map(id => db.collection('users').doc(id).get());
         const renterDocs = await Promise.all(renterPromises);
-        
+
         const rentersMap = new Map();
         renterDocs.forEach(doc => {
             if (doc.exists) {
@@ -854,7 +863,7 @@ const submitBookingReport = async (req, res) => {
     try {
         const { bookingId } = req.params;
         const { reason, details, reporterRole } = req.body;
-        const reporterId = req.customUser.uid; 
+        const reporterId = req.customUser.uid;
 
         if (!reason || !details) {
             return res.status(400).json({ message: 'Reason and details are required for the report.' });
@@ -879,12 +888,12 @@ const submitBookingReport = async (req, res) => {
             reportedAt: admin.firestore.FieldValue.serverTimestamp(),
             reason,
             details,
-            status: 'submitted', 
-            vehicleId: bookingData.vehicleId, 
+            status: 'submitted',
+            vehicleId: bookingData.vehicleId,
             ownerId: bookingData.ownerId,
             renterId: bookingData.renterId,
         };
-        
+
         const reportRef = await db.collection('reports').add(reportData);
 
         // Notify admin (Need an admin user ID or topic to send this)
@@ -925,7 +934,7 @@ const requestBookingExtension = async (req, res) => {
              return res.status(400).json({ message: `Booking cannot be extended in its current state (${bookingData.paymentStatus}). Only 'Confirmed' bookings can be extended.` });
         }
 
-        const currentEndDate = convertToDate(bookingData.endDate); 
+        const currentEndDate = convertToDate(bookingData.endDate);
         if (!currentEndDate) {
              throw new Error("Could not parse current booking end date.");
         }
@@ -1032,21 +1041,21 @@ const confirmExtensionPayment = async (req, res) => {
         if (bookingData.paymentStatus !== 'pending_extension_payment') {
             return res.status(400).json({ message: `Booking is not awaiting extension payment. Current status: ${bookingData.paymentStatus}` });
         }
-        
+
         const pendingExtensionIndex = currentExtensions.map(e => e.status).lastIndexOf('pending_payment');
         if (pendingExtensionIndex === -1) {
             return res.status(400).json({ message: 'No valid, pending extension request found.' });
         }
-        
+
         const pendingExtension = currentExtensions[pendingExtensionIndex];
         const expectedCost = parseFloat(pendingExtension.cost);
         const paidAmount = parseFloat(amount);
-        
+
         if (paidAmount < expectedCost) {
              return res.status(400).json({ message: `Payment amount (₱${paidAmount.toFixed(2)}) is less than the required extension cost (₱${expectedCost.toFixed(2)}).` });
         }
-        
-        const costToApply = expectedCost; 
+
+        const costToApply = expectedCost;
 
         currentExtensions[pendingExtensionIndex] = {
             ...pendingExtension,
@@ -1099,12 +1108,12 @@ const deferExtensionPayment = async (req, res) => {
         if (bookingData.paymentStatus !== 'pending_extension_payment') {
             return res.status(400).json({ message: `Booking is not awaiting extension payment. Current status: ${bookingData.paymentStatus}` });
         }
-        
+
         const pendingExtensionIndex = currentExtensions.map(e => e.status).lastIndexOf('pending_payment');
         if (pendingExtensionIndex === -1) {
             return res.status(400).json({ message: 'No valid, pending extension request found.' });
         }
-        
+
         const pendingExtension = currentExtensions[pendingExtensionIndex];
         const expectedCost = parseFloat(pendingExtension.cost);
         const paidAmount = parseFloat(amount);
@@ -1112,7 +1121,7 @@ const deferExtensionPayment = async (req, res) => {
         if (paidAmount < expectedCost) {
              return res.status(400).json({ message: `Amount mismatch. Expected ₱${expectedCost.toFixed(2)}.` });
         }
-        
+
         const costToApply = expectedCost;
 
         currentExtensions[pendingExtensionIndex] = {
@@ -1152,27 +1161,27 @@ const generateBookingContract = async (req, res) => {
   try {
     const { bookingId } = req.params;
     const userId = req.customUser.uid;
-    
+   
     const bookingDoc = await db.collection('bookings').doc(bookingId).get();
     if (!bookingDoc.exists) {
         return res.status(404).json({ message: "Booking not found" });
     }
     const booking = bookingDoc.data();
-    
-    if (req.customUser.role !== 'admin' && userId !== booking.ownerId && userId !== booking.renterId) { 
+   
+    if (req.customUser.role !== 'admin' && userId !== booking.ownerId && userId !== booking.renterId) {
         return res.status(403).json({ message: "Forbidden: You are not authorized to download this contract." });
     }
-    
+   
     const [ownerDoc, renterDoc, vehicleDoc] = await Promise.all([
         db.collection('users').doc(booking.ownerId).get(),
         db.collection('users').doc(booking.renterId).get(),
         db.collection('vehicles').doc(booking.vehicleId).get()
     ]);
-    
+   
     const owner = extractUserDetails(ownerDoc);
     const renter = extractUserDetails(renterDoc);
     const vehicle = vehicleDoc.exists ? vehicleDoc.data() : { make: 'N/A', model: 'N/A', year: 'N/A', plateNumber: 'N/A', vin: 'N/A' };
-    
+   
     // --- Date and Text Formatting (No Changes) ---
     const startDate = convertToDate(booking.startDate);
     const endDate = convertToDate(booking.endDate);
@@ -1181,7 +1190,7 @@ const generateBookingContract = async (req, res) => {
     const formattedEndDate = endDate ? DateTime.fromJSDate(endDate).toLocaleString(DateTime.DATE_FULL) : 'N/A';
     const formattedEndTime = endDate ? DateTime.fromJSDate(endDate).toLocaleString(DateTime.TIME_SIMPLE) : 'N/A';
     const formattedSignatureDate = DateTime.now().toLocaleString(DateTime.DATE_FULL);
-    
+   
     const totalCost = booking.totalCost || 0;
     const amountPaid = booking.amountPaid || 0;
     const remainingBalance = booking.remainingBalance || 0;
@@ -1220,19 +1229,19 @@ const generateBookingContract = async (req, res) => {
     // --- === ADDED: PLACE LOGO AT TOP-CENTER === ---
     try {
       const imagePath = path.join(__dirname, '../assets/rentcycle_logo.png');
-      
+     
       // *** ADDED: Log the path to the server console for debugging ***
       console.log('[Contract Logo] Trying to load logo from:', imagePath);
 
-      const logoWidth = 150; 
+      const logoWidth = 150;
       const logoX = (doc.page.width - logoWidth) / 2;
-      
+     
       doc.image(imagePath, logoX, 35, { // 35px from the top
           width: logoWidth,
       });
 
       // *** CHANGED: Reduced space from 3 to 2 ***
-      doc.moveDown(2); 
+      doc.moveDown(2);
 
     } catch (imageError) {
       // *** ADDED: Better error logging ***
@@ -1307,7 +1316,7 @@ const generateBookingContract = async (req, res) => {
 
     // --- Finalize the PDF ---
     doc.end(); // This sends the response
-    
+   
   } catch (error) {
     console.error(`Error generating contract for ${req.params.bookingId}:`, error);
     if (!res.headersSent) {
@@ -1350,7 +1359,7 @@ const autoHandleOverdueBookings = async () => {
 
       if (now > gracePeriodEnd) {
         log(`Cron Job: Booking ${doc.id} is past 3-hour grace period. Updating status.`);
-        
+       
         const bookingRef = db.collection('bookings').doc(doc.id);
         updatesBatch.update(bookingRef, {
           paymentStatus: 'awaiting_return', // This is the new "late" status
@@ -1465,7 +1474,7 @@ const submitPlatformFeePayment = async (req, res) => {
 const verifyPlatformFee = async (req, res) => {
   try {
     const { feeId } = req.params;
-    
+   
     await db.collection('platform_fees').doc(feeId).update({
       status: 'verified',
       verifiedAt: admin.firestore.FieldValue.serverTimestamp()

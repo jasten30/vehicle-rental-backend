@@ -2,6 +2,8 @@ const { admin, db, storageBucket } = require('../utils/firebase');
 const { sendVerificationEmail } = require('../utils/emailService');
 const { getAuth } = require('firebase-admin/auth');
 
+const { createNotification } = require('../utils/notificationHelper');
+
 const log = (message, data = '') => {
   console.log(`[UserController] ${message}`, data);
 };
@@ -35,7 +37,6 @@ const uploadBase64Image = async (base64String, folderName) => {
     return null;
   }
 };
-// =============================================================
 
 const createUserProfile = async (req, res) => {
   try {
@@ -91,10 +92,8 @@ const getUserProfile = async (req, res) => {
       about: userData.about || '',
       bannerImageUrl: userData.bannerImageUrl || '',
       profilePhotoUrl: userData.profilePhotoUrl || '',
-      // --- ADDED ---
       payoutQRCodeUrl: userData.payoutQRCodeUrl || null,
       payoutDetails: userData.payoutDetails || null,
-      // --- END ADDED ---
       isApprovedToDrive: userData.isApprovedToDrive || false,
       isMobileVerified: userData.isMobileVerified || false,
       emailVerified: userData.emailVerified || false,
@@ -102,6 +101,7 @@ const getUserProfile = async (req, res) => {
       monthlyBookingCounts: userData.monthlyBookingCounts || {},
       favorites: userData.favorites || [],
       isBlocked: userData.isBlocked || false,
+      isSuspended: userData.isSuspended === true,
     };
     res.status(200).json(profile);
   } catch (error) {
@@ -298,26 +298,83 @@ const submitHostApplication = async (req, res) => {
 
 const getAllUsers = async (req, res) => {
   try {
-    const usersSnapshot = await db.collection('users').get();
-    const userPromises = usersSnapshot.docs.map(async (doc) => {
-      const userData = doc.data();
-      const vehicleCountQuery = await db.collection('vehicles').where('ownerId', '==', doc.id).count().get();
-      const listingCount = vehicleCountQuery.data().count;
+    const usersRef = db.collection('users');
+    const snapshot = await usersRef.get();
+
+    if (snapshot.empty) {
+      return res.status(200).json([]);
+    }
+
+    const users = snapshot.docs.map(doc => {
+      const data = doc.data();
       return {
         uid: doc.id,
-        email: userData.email,
-        name: userData.name || `${userData.firstName || ''} ${userData.lastName || ''}`.trim(),
-        role: userData.role || 'renter',
-        listingCount: listingCount,
-        createdAt: userData.createdAt,
-        isBlocked: userData.isBlocked || false,
+        ...data, 
+        // Explicitly ensure this field exists, default to false if missing
+        isSuspended: data.isSuspended === true 
       };
     });
-    const allUsers = await Promise.all(userPromises);
-    res.status(200).json(allUsers);
+
+    res.status(200).json(users);
   } catch (error) {
     console.error('Error fetching all users:', error);
-    res.status(500).json({ message: 'Failed to fetch all users.' });
+    res.status(500).json({ message: 'Error fetching users.' });
+  }
+};
+
+const toggleUserSuspension = async (req, res) => {
+  try {
+    const { userId } = req.params;
+    // Extract 'reason' from the request body
+    const { isSuspended, reason } = req.body; 
+
+    const suspendedStatus = Boolean(isSuspended);
+
+    // Prepare the database update object
+    const updateData = {
+      isSuspended: suspendedStatus,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp()
+    };
+
+    // If suspending, save the reason. 
+    // If unsuspending, delete the reason field to clean up.
+    if (suspendedStatus) {
+      updateData.suspensionReason = reason || 'Violation of terms and policies.';
+    } else {
+      updateData.suspensionReason = admin.firestore.FieldValue.delete();
+    }
+
+    // 1. Update Database
+    await db.collection('users').doc(userId).update(updateData);
+
+    const action = suspendedStatus ? 'suspended' : 'unsuspended';
+
+    // 2. Notify User
+    try {
+      let message = '';
+      let link = '';
+
+      if (suspendedStatus) {
+        // Include the reason in the notification
+        const reasonText = reason ? ` Reason: "${reason}".` : '';
+        message = `Your account has been suspended.${reasonText} Please contact support for assistance.`;
+        link = '/contact';
+      } else {
+        message = 'Your account has been reactivated! You can now resume booking and listing vehicles.';
+        link = '/dashboard';
+      }
+
+      await createNotification(userId, message, link);
+    } catch (notifyError) {
+      console.error("Notification failed but user was updated:", notifyError.message);
+    }
+
+    console.log(`[UserController] User ${userId} was ${action}. Reason provided: ${reason || 'None'}`);
+    res.status(200).json({ message: `User ${action} successfully.` });
+
+  } catch (error) {
+    console.error('Error toggling user suspension:', error);
+    res.status(500).json({ message: 'Failed to update user suspension status.' });
   }
 };
 
@@ -524,7 +581,6 @@ const updateUserBlockStatus = async (req, res) => {
   }
 };
 
-
 module.exports = {
   createUserProfile,
   getUserProfile,
@@ -541,5 +597,6 @@ module.exports = {
   declineHostApplication,
   toggleFavoriteVehicle,
   updateUserBlockStatus,
+  toggleUserSuspension,
 };
 

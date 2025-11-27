@@ -1,7 +1,7 @@
 const { admin, db, storageBucket } = require('../utils/firebase');
 const { createNotification } = require('../utils/notificationHelper'); 
 const { DateTime } = require('luxon');
-const PDFDocument = require('pdfkit'); // <-- This is required for PDF generation
+const PDFDocument = require('pdfkit'); 
 const path = require('path');
 
 // Helper function for consistent logging
@@ -12,24 +12,16 @@ const log = (message) => {
 // Helper function to safely convert Firestore Timestamp or ISO string to Date object
 const convertToDate = (value) => {
   if (value instanceof admin.firestore.Timestamp) {
-    return value.toDate(); // Keep handling Firestore Timestamps
+    return value.toDate(); 
   }
   if (typeof value === 'string') {
-    // Use Luxon to parse the ISO string robustly
-    const dt = DateTime.fromISO(value, { zone: 'utc' }); // Parse as UTC initially or specify expected zone if known
-    return dt.isValid ? dt.toJSDate() : null; // Return JS Date if valid, else null
+    const dt = DateTime.fromISO(value, { zone: 'utc' });
+    return dt.isValid ? dt.toJSDate() : null; 
   }
   return null;
 };
 
-// ================================================
-//  HELPER FUNCTION
-// ================================================
-/**
- * Extracts key user details from a user document snapshot.
- * @param {admin.firestore.DocumentSnapshot} userDoc - The Firestore user document.
- * @returns {object | null} A clean object with user details or null.
- */
+// HELPER: Extract user details
 const extractUserDetails = (userDoc) => {
   if (!userDoc || !userDoc.exists) {
     return { name: 'Unknown User', email: 'N/A', profilePhotoUrl: null, payoutQRCodeUrl: null, phoneNumber: 'N/A' };
@@ -45,7 +37,10 @@ const extractUserDetails = (userDoc) => {
     phoneNumber: userData.phoneNumber || 'N/A'
   };
 };
-// ================================================
+
+// ==================================================================
+// CONTROLLER FUNCTIONS
+// ==================================================================
 
 const getAllBookings = async (req, res) => {
   try {
@@ -78,7 +73,7 @@ const getAllBookings = async (req, res) => {
     const [vehicleDocs, renterDocs] = await Promise.all([Promise.all(vehiclePromises), Promise.all(renterPromises)]);
 
     const vehiclesMap = new Map(vehicleDocs.map(doc => doc.exists ? [doc.id, doc.data()] : null).filter(Boolean));
-    const rentersMap = new Map(renterDocs.map(doc => doc.exists ? [doc.id, extractUserDetails(doc)] : null).filter(Boolean)); // Use helper
+    const rentersMap = new Map(renterDocs.map(doc => doc.exists ? [doc.id, extractUserDetails(doc)] : null).filter(Boolean));
 
     const enrichedBookings = bookingsData.map((booking) => {
       const vehicle = vehiclesMap.get(booking.vehicleId);
@@ -103,7 +98,15 @@ const getAllBookings = async (req, res) => {
 const createBooking = async (req, res) => {
   try {
     const { vehicleId, startDate, endDate } = req.body;
-    const renterId = req.customUser.uid; // This is the user trying to book
+    const renterId = req.customUser.uid; 
+
+    // --- 1. CHECK IF RENTER IS SUSPENDED ---
+    if (req.customUser.isSuspended) {
+       return res.status(403).json({ 
+         message: 'Your account is suspended. You cannot create new bookings.' 
+       });
+    }
+    // ---------------------------------------
 
     if (!vehicleId || !startDate || !endDate) {
       return res.status(400).json({ message: 'Missing required booking fields (vehicleId, startDate, endDate).' });
@@ -124,6 +127,15 @@ const createBooking = async (req, res) => {
     const vehicleData = vehicleDoc.data();
     const ownerId = vehicleData.ownerId;
     
+    // --- 2. CHECK IF OWNER IS SUSPENDED ---
+    const ownerDoc = await db.collection('users').doc(ownerId).get();
+    if (ownerDoc.exists && ownerDoc.data().isSuspended) {
+       return res.status(403).json({ 
+         message: 'This vehicle is temporarily unavailable for booking (Owner suspended).' 
+       });
+    }
+    // --------------------------------------
+
     if (ownerId === renterId) {
       log(`User ${renterId} blocked from booking their own vehicle ${vehicleId}`);
       return res.status(403).json({ message: 'You cannot book your own vehicle.' });
@@ -182,7 +194,15 @@ const apiCheckAvailability = async (req, res) => {
   try {
     const { vehicleId } = req.params;
     const { startDate, endDate } = req.query; 
-    const requesterId = req.customUser.uid; // Get the user ID
+    const requesterId = req.customUser.uid; 
+
+    // --- 1. CHECK IF RENTER IS SUSPENDED ---
+    if (req.customUser.isSuspended) {
+        return res.status(403).json({ 
+             isAvailable: false, 
+             message: 'Your account is suspended. You cannot check availability or book vehicles.' 
+        });
+    }
 
     if (!startDate || !endDate) {
         log('Availability check failed: Missing startDate or endDate.');
@@ -203,12 +223,22 @@ const apiCheckAvailability = async (req, res) => {
       return res.status(404).json({ isAvailable: false, message: 'Vehicle not found.' });
     }
     const vehicleData = vehicleDoc.data();
+    const ownerId = vehicleData.ownerId;
 
-    if (vehicleData.ownerId === requesterId) {
+    // --- 2. CHECK IF OWNER IS SUSPENDED ---
+    const ownerDoc = await db.collection('users').doc(ownerId).get();
+    if (ownerDoc.exists && ownerDoc.data().isSuspended) {
+         return res.status(403).json({ 
+             isAvailable: false, 
+             message: 'This vehicle is temporarily unavailable for booking (Owner suspended).' 
+         });
+    }
+
+    if (ownerId === requesterId) {
       log(`Owner ${requesterId} blocked from checking availability on their own vehicle ${vehicleId}`);
       return res.status(403).json({ isAvailable: false, message: 'You cannot book your own vehicle.' });
     }
-
+    
     const unavailablePeriods = vehicleData.availability || [];
     for (const period of unavailablePeriods) {
       const periodStart = convertToDate(period.start);
@@ -221,8 +251,8 @@ const apiCheckAvailability = async (req, res) => {
 
     const activeBookingStatuses = ['confirmed', 'pending_extension_payment', 'awaiting_return'];
     const bookingsRef = db.collection('bookings')
-                         .where('vehicleId', '==', vehicleId)
-                         .where('paymentStatus', 'in', activeBookingStatuses);
+                          .where('vehicleId', '==', vehicleId)
+                          .where('paymentStatus', 'in', activeBookingStatuses);
 
     const snapshot = await bookingsRef.get();
     let isOverlapping = false;
@@ -1116,357 +1146,364 @@ const deferExtensionPayment = async (req, res) => {
 };
 
 // ================================================
-//  FIXED PDF GENERATION FUNCTION
+//  FIXED PDF GENERATION FUNCTION
 // ================================================
 const generateBookingContract = async (req, res) => {
-  try {
-    const { bookingId } = req.params;
-    const userId = req.customUser.uid;
-    
-    const bookingDoc = await db.collection('bookings').doc(bookingId).get();
-    if (!bookingDoc.exists) {
-        return res.status(404).json({ message: "Booking not found" });
-    }
-    const booking = bookingDoc.data();
-    
-    if (req.customUser.role !== 'admin' && userId !== booking.ownerId && userId !== booking.renterId) { 
-        return res.status(403).json({ message: "Forbidden: You are not authorized to download this contract." });
-    }
-    
-    const [ownerDoc, renterDoc, vehicleDoc] = await Promise.all([
-        db.collection('users').doc(booking.ownerId).get(),
-        db.collection('users').doc(booking.renterId).get(),
-        db.collection('vehicles').doc(booking.vehicleId).get()
-    ]);
-    
-    const owner = extractUserDetails(ownerDoc);
-    const renter = extractUserDetails(renterDoc);
-    const vehicle = vehicleDoc.exists ? vehicleDoc.data() : { make: 'N/A', model: 'N/A', year: 'N/A', plateNumber: 'N/A', vin: 'N/A' };
-    
-    // --- Date and Text Formatting (No Changes) ---
-    const startDate = convertToDate(booking.startDate);
-    const endDate = convertToDate(booking.endDate);
-    const formattedStartDate = startDate ? DateTime.fromJSDate(startDate).toLocaleString(DateTime.DATE_FULL) : 'N/A';
-    const formattedStartTime = startDate ? DateTime.fromJSDate(startDate).toLocaleString(DateTime.TIME_SIMPLE) : 'N/A';
-    const formattedEndDate = endDate ? DateTime.fromJSDate(endDate).toLocaleString(DateTime.DATE_FULL) : 'N/A';
-    const formattedEndTime = endDate ? DateTime.fromJSDate(endDate).toLocaleString(DateTime.TIME_SIMPLE) : 'N/A';
-    const formattedSignatureDate = DateTime.now().toLocaleString(DateTime.DATE_FULL);
-    
-    const totalCost = booking.totalCost || 0;
-    const amountPaid = booking.amountPaid || 0;
-    const remainingBalance = booking.remainingBalance || 0;
-    const downPayment = booking.downPayment || 0;
+  try {
+    const { bookingId } = req.params;
+    const userId = req.customUser.uid;
+    
+    const bookingDoc = await db.collection('bookings').doc(bookingId).get();
+    if (!bookingDoc.exists) {
+        return res.status(404).json({ message: "Booking not found" });
+    }
+    const booking = bookingDoc.data();
+    
+    if (req.customUser.role !== 'admin' && userId !== booking.ownerId && userId !== booking.renterId) { 
+        return res.status(403).json({ message: "Forbidden: You are not authorized to download this contract." });
+    }
+    
+    const [ownerDoc, renterDoc, vehicleDoc] = await Promise.all([
+        db.collection('users').doc(booking.ownerId).get(),
+        db.collection('users').doc(booking.renterId).get(),
+        db.collection('vehicles').doc(booking.vehicleId).get()
+    ]);
+    
+    const owner = extractUserDetails(ownerDoc);
+    const renter = extractUserDetails(renterDoc);
+    const vehicle = vehicleDoc.exists ? vehicleDoc.data() : { make: 'N/A', model: 'N/A', year: 'N/A', plateNumber: 'N/A', vin: 'N/A' };
+    
+    // --- Date and Text Formatting (No Changes) ---
+    const startDate = convertToDate(booking.startDate);
+    const endDate = convertToDate(booking.endDate);
+    const formattedStartDate = startDate ? DateTime.fromJSDate(startDate).toLocaleString(DateTime.DATE_FULL) : 'N/A';
+    const formattedStartTime = startDate ? DateTime.fromJSDate(startDate).toLocaleString(DateTime.TIME_SIMPLE) : 'N/A';
+    const formattedEndDate = endDate ? DateTime.fromJSDate(endDate).toLocaleString(DateTime.DATE_FULL) : 'N/A';
+    const formattedEndTime = endDate ? DateTime.fromJSDate(endDate).toLocaleString(DateTime.TIME_SIMPLE) : 'N/A';
+    const formattedSignatureDate = DateTime.now().toLocaleString(DateTime.DATE_FULL);
+    
+    const totalCost = booking.totalCost || 0;
+    const amountPaid = booking.amountPaid || 0;
+    const remainingBalance = booking.remainingBalance || 0;
+    const downPayment = booking.downPayment || 0;
 
-    let extensionsText = '--- EXTENSIONS ---\n\n';
-    if (booking.extensions && booking.extensions.length > 0) {
-        booking.extensions.forEach((ext, index) => {
-            extensionsText += `Extension ${index + 1}:\n`;
-            extensionsText += `   Hours: ${ext.hours}\n`;
-            extensionsText += `   Cost: ₱${ext.cost.toFixed(2)}\n`;
-            const extEndDate = ext.newEndDate?.toDate ? ext.newEndDate.toDate() : (ext.newEndDate?._seconds ? new Date(ext.newEndDate._seconds * 1000) : null);
-            extensionsText += `   New Return Date: ${extEndDate?.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' }) || 'N/A'}\n`;
-            extensionsText += `   Payment Status: ${ext.status}\n`;
-            if(ext.paymentReferenceNumber) extensionsText += `   Reference: ${ext.paymentReferenceNumber}\n`;
-            if(ext.paymentMethod) extensionsText += `   Payment Method: ${ext.paymentMethod}\n`;
-            extensionsText += '\n';
-        });
-    } else {
-        extensionsText = 'No extensions applied to this booking.\n';
-    }
-    // --- End Formatting ---
+    let extensionsText = '--- EXTENSIONS ---\n\n';
+    if (booking.extensions && booking.extensions.length > 0) {
+        booking.extensions.forEach((ext, index) => {
+            extensionsText += `Extension ${index + 1}:\n`;
+            extensionsText += `   Hours: ${ext.hours}\n`;
+            extensionsText += `   Cost: ₱${ext.cost.toFixed(2)}\n`;
+            const extEndDate = ext.newEndDate?.toDate ? ext.newEndDate.toDate() : (ext.newEndDate?._seconds ? new Date(ext.newEndDate._seconds * 1000) : null);
+            extensionsText += `   New Return Date: ${extEndDate?.toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' }) || 'N/A'}\n`;
+            extensionsText += `   Payment Status: ${ext.status}\n`;
+            if(ext.paymentReferenceNumber) extensionsText += `   Reference: ${ext.paymentReferenceNumber}\n`;
+            if(ext.paymentMethod) extensionsText += `   Payment Method: ${ext.paymentMethod}\n`;
+            extensionsText += '\n';
+        });
+    } else {
+        extensionsText = 'No extensions applied to this booking.\n';
+    }
+    // --- End Formatting ---
 
-    // --- PDF Generation Logic ---
-    // *** CHANGED: Reduced margin from 50 to 40 ***
-    const doc = new PDFDocument({ margin: 40 });
-    const filename = `BookingContract-${bookingId}.pdf`;
+    // --- PDF Generation Logic ---
+    // *** CHANGED: Reduced margin from 50 to 40 ***
+    const doc = new PDFDocument({ margin: 40 });
+    const filename = `BookingContract-${bookingId}.pdf`;
 
-    // Set response headers
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    // Set response headers
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
 
-    // Pipe the PDF content to the response
-    doc.pipe(res);
+    // Pipe the PDF content to the response
+    doc.pipe(res);
 
-    try {
-      const imagePath = path.join(__dirname, '../assets/rentcycle_logo.png');
-      
-      console.log('[Contract Logo] Trying to load logo from:', imagePath);
+    // --- === ADDED: PLACE LOGO AT TOP-CENTER === ---
+    try {
+      const imagePath = path.join(__dirname, '../assets/rentcycle_logo.png');
+      
+      // *** ADDED: Log the path to the server console for debugging ***
+      console.log('[Contract Logo] Trying to load logo from:', imagePath);
 
-      const logoWidth = 150; 
-      const logoX = (doc.page.width - logoWidth) / 2;
-      
-      doc.image(imagePath, logoX, 35, { // 35px from the top
-          width: logoWidth,
-      });
+      const logoWidth = 150; 
+      const logoX = (doc.page.width - logoWidth) / 2;
+      
+      doc.image(imagePath, logoX, 35, { // 35px from the top
+          width: logoWidth,
+      });
 
-      doc.moveDown(2); 
+      // *** CHANGED: Reduced space from 3 to 2 ***
+      doc.moveDown(2); 
 
-    } catch (imageError) {
-      // *** ADDED: Better error logging ***
-      console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-      console.error("[Contract Logo] FAILED TO LOAD LOGO IMAGE:", imageError.message);
-      console.error("Check if the file exists at the path above.");
-      console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-      // If logo fails, just add extra space and continue
-      doc.moveDown(3);
-    }
-    // --- === END OF LOGO CODE === ---
+    } catch (imageError) {
+      // *** ADDED: Better error logging ***
+      console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+      console.error("[Contract Logo] FAILED TO LOAD LOGO IMAGE:", imageError.message);
+      console.error("Check if the file exists at the path above.");
+      console.error("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+      // If logo fails, just add extra space and continue
+      doc.moveDown(3);
+    }
+    // --- === END OF LOGO CODE === ---
 
-    // --- Add Content to the PDF ---
-    doc.fontSize(18).font('Helvetica-Bold').text('CAR RENTAL AGREEMENT', { align: 'center' });
-    // *** CHANGED: Reduced space from 2 to 1.5 ***
-    doc.moveDown(1.5);
+    // --- Add Content to the PDF ---
+    doc.fontSize(18).font('Helvetica-Bold').text('CAR RENTAL AGREEMENT', { align: 'center' });
+    // *** CHANGED: Reduced space from 2 to 1.5 ***
+    doc.moveDown(1.5);
 
-    doc.fontSize(10).font('Helvetica-Bold').text('Lessor (Owner): ', { continued: true }).font('Helvetica').text(owner.name);
-    doc.font('Helvetica-Bold').text('Lessee (Renter): ', { continued: true }).font('Helvetica').text(renter.name);
-    doc.moveDown();
+    doc.fontSize(10).font('Helvetica-Bold').text('Lessor (Owner): ', { continued: true }).font('Helvetica').text(owner.name);
+    doc.font('Helvetica-Bold').text('Lessee (Renter): ', { continued: true }).font('Helvetica').text(renter.name);
+    doc.moveDown();
 
-    doc.font('Helvetica-Bold').text('Vehicle Details:', { underline: true });
-    doc.font('Helvetica').text(`Make/Model: ${vehicle.make} ${vehicle.model}`);
-    doc.text(`Plate Number: ${vehicle.cor?.plateNumber || vehicle.plateNumber || 'N/A'}`);
-    // *** CHANGED: Reduced space from 2 to 1.5 ***
-    doc.moveDown(1.5);
+    doc.font('Helvetica-Bold').text('Vehicle Details:', { underline: true });
+    doc.font('Helvetica').text(`Make/Model: ${vehicle.make} ${vehicle.model}`);
+    doc.text(`Plate Number: ${vehicle.cor?.plateNumber || vehicle.plateNumber || 'N/A'}`);
+    // *** CHANGED: Reduced space from 2 to 1.5 ***
+    doc.moveDown(1.5);
 
-    doc.fontSize(12).font('Helvetica-Bold').text('TERMS', { underline: true });
-    doc.moveDown();
+    doc.fontSize(12).font('Helvetica-Bold').text('TERMS', { underline: true });
+    doc.moveDown();
 
-    // Use .list() for numbered items
-    // *** CHANGED: Font size from 10 to 9 ***
-    doc.fontSize(9).font('Helvetica').list([
-      'The Renter agrees to return the vehicle by the specified Final Return date and time.',
-      'The vehicle is to be returned in the same condition it was received, ordinary wear and tear excepted.',
-      'The Renter is responsible for any fines, tolls, or damages incurred during the rental period.',
-      `The remaining balance of ₱${remainingBalance.toFixed(2)} is due upon vehicle pickup/return as agreed.`,
-      `Rental Period: The rental period shall start on ${formattedStartDate} at ${formattedStartTime} and end on ${formattedEndDate} at ${formattedEndTime}`,
-      'Fuel Policy: The vehicle must be returned with the same number of fuel bars as when it was rented. If the fuel level is lower, the renter will be charged accordingly.',
-      "Driver's Responsibility: Only the renter or authorized drivers with valid driver's licenses may operate the vehicle.",
-      'Prohibited Uses: The vehicle shall not be used for racing, towing, off-road driving, or any illegal activity.',
-      'Late Return Policy: If the vehicle is returned later than the agreed time, applicable hourly or half-day rates will automatically apply. (Subject to 3-hour grace period for emergencies, unless otherwise updated by owner).',
-      'Traffic Violations: Any traffic violations or penalties incurred during the rental period shall be the responsibility of the renter.',
-      'Emergency or Breakdown: In case of vehicle malfunction, the renter must immediately contact the owner. Unauthorized repairs are not allowed unless approved by the owner.',
-      "Identification Requirement: The renter must present a valid government-issued ID and driver's license before the vehicle is released.",
-      'Damages: The renter is responsible for any damages to the unit during the rental period. Repair costs will be shouldered by the renter.',
-      `Payment: All payments shall be made in full before or upon release of the vehicle.\nTotal Cost: ₱${totalCost.toFixed(2)}\nAmount Paid: ₱${amountPaid.toFixed(2)}\nRemaining Balance: ₱${remainingBalance.toFixed(2)}\nDownpayment Reference: ${booking.paymentReferenceNumber || 'N/A'}\n\n${extensionsText}`,
-      'Agreement Validity: By signing below, the renter agrees to all the terms and conditions stated in this contract.'
-    ], {
-      bulletRadius: 0.1, // Use numbers instead of bullets
-      textIndent: 10,
-    });
+    // Use .list() for numbered items
+    // *** CHANGED: Font size from 10 to 9 ***
+    doc.fontSize(9).font('Helvetica').list([
+      'The Renter agrees to return the vehicle by the specified Final Return date and time.',
+      'The vehicle is to be returned in the same condition it was received, ordinary wear and tear excepted.',
+      'The Renter is responsible for any fines, tolls, or damages incurred during the rental period.',
+      `The remaining balance of ₱${remainingBalance.toFixed(2)} is due upon vehicle pickup/return as agreed.`,
+      `Rental Period: The rental period shall start on ${formattedStartDate} at ${formattedStartTime} and end on ${formattedEndDate} at ${formattedEndTime}`,
+      'Fuel Policy: The vehicle must be returned with the same number of fuel bars as when it was rented. If the fuel level is lower, the renter will be charged accordingly.',
+      "Driver's Responsibility: Only the renter or authorized drivers with valid driver's licenses may operate the vehicle.",
+      'Prohibited Uses: The vehicle shall not be used for racing, towing, off-road driving, or any illegal activity.',
+      'Late Return Policy: If the vehicle is returned later than the agreed time, applicable hourly or half-day rates will automatically apply. (Subject to 3-hour grace period for emergencies, unless otherwise updated by owner).',
+      'Traffic Violations: Any traffic violations or penalties incurred during the rental period shall be the responsibility of the renter.',
+      'Emergency or Breakdown: In case of vehicle malfunction, the renter must immediately contact the owner. Unauthorized repairs are not allowed unless approved by the owner.',
+      "Identification Requirement: The renter must present a valid government-issued ID and driver's license before the vehicle is released.",
+      'Damages: The renter is responsible for any damages to the unit during the rental period. Repair costs will be shouldered by the renter.',
+      `Payment: All payments shall be made in full before or upon release of the vehicle.\nTotal Cost: ₱${totalCost.toFixed(2)}\nAmount Paid: ₱${amountPaid.toFixed(2)}\nRemaining Balance: ₱${remainingBalance.toFixed(2)}\nDownpayment Reference: ${booking.paymentReferenceNumber || 'N/A'}\n\n${extensionsText}`,
+      'Agreement Validity: By signing below, the renter agrees to all the terms and conditions stated in this contract.'
+    ], {
+      bulletRadius: 0.1, // Use numbers instead of bullets
+      textIndent: 10,
+    });
 
-    // *** CHANGED: Reduced space from 3 to 2 ***
-    doc.moveDown(2);
+    // *** CHANGED: Reduced space from 3 to 2 ***
+    doc.moveDown(2);
 
-    doc.fontSize(12).font('Helvetica-Bold').text('ACKNOWLEDGMENT AND SIGNATURES', { underline: true });
-    doc.moveDown();
+    doc.fontSize(12).font('Helvetica-Bold').text('ACKNOWLEDGMENT AND SIGNATURES', { underline: true });
+    doc.moveDown();
 
-    // *** CHANGED: Set font size back to 10 for signatures ***
-    doc.fontSize(10).font('Helvetica');
-    doc.text(`Renter's Name: ${renter.name}`);
-    doc.text(`Contact Number: ${renter.phoneNumber}`);
-    doc.text('Signature of Renter: ____________________________');
-    doc.text(`Date: ${formattedSignatureDate}`); // Pre-fill the date
-    // *** CHANGED: Reduced space from 2 to 1.5 ***
-    doc.moveDown(1.5);
+    // *** CHANGED: Set font size back to 10 for signatures ***
+    doc.fontSize(10).font('Helvetica');
+    doc.text(`Renter's Name: ${renter.name}`);
+    doc.text(`Contact Number: ${renter.phoneNumber}`);
+    doc.text('Signature of Renter: ____________________________');
+    doc.text(`Date: ${formattedSignatureDate}`); // Pre-fill the date
+    // *** CHANGED: Reduced space from 2 to 1.5 ***
+    doc.moveDown(1.5);
 
-    doc.text(`Owner's Name: ${owner.name}`);
-    doc.text('Signature of Owner: ____________________________');
-    doc.text(`Date: ${formattedSignatureDate}`); // Pre-fill the date
+    doc.text(`Owner's Name: ${owner.name}`);
+    doc.text('Signature of Owner: ____________________________');
+    doc.text(`Date: ${formattedSignatureDate}`); // Pre-fill the date
 
-    // --- Finalize the PDF ---
-    doc.end(); // This sends the response
-    
-  } catch (error) {
-    console.error(`Error generating contract for ${req.params.bookingId}:`, error);
-    if (!res.headersSent) {
-        res.status(500).json({ message: "Server error generating contract." });
-    } else {
-        res.end();
-    }
-  }
+    // --- Finalize the PDF ---
+    doc.end(); // This sends the response
+    
+  } catch (error) {
+    console.error(`Error generating contract for ${req.params.bookingId}:`, error);
+    if (!res.headersSent) {
+        res.status(500).json({ message: "Server error generating contract." });
+    } else {
+        res.end();
+    }
+  }
 };
+// ================================================
 
+// ================================================
+//  NEW FUNCTION FOR CRON JOB
+// ================================================
 const autoHandleOverdueBookings = async () => {
-  log('Running cron job: autoHandleOverdueBookings...');
-  const now = new Date(); // The current time
+  log('Running cron job: autoHandleOverdueBookings...');
+  const now = new Date(); // The current time
 
-  try {
-    const bookingsRef = db.collection('bookings');
-    const snapshot = await bookingsRef
-      .where('paymentStatus', '==', 'confirmed')
-      .where('endDate', '<', admin.firestore.Timestamp.fromDate(now)) // Find all active trips that *should* have ended
-      .get();
+  try {
+    const bookingsRef = db.collection('bookings');
+    const snapshot = await bookingsRef
+      .where('paymentStatus', '==', 'confirmed')
+      .where('endDate', '<', admin.firestore.Timestamp.fromDate(now)) // Find all active trips that *should* have ended
+      .get();
 
-    if (snapshot.empty) {
-      log('Cron Job: No active bookings found past their end date.');
-      return;
-    }
+    if (snapshot.empty) {
+      log('Cron Job: No active bookings found past their end date.');
+      return;
+    }
 
-    const updatesBatch = db.batch();
-    let notifications = [];
+    const updatesBatch = db.batch();
+    let notifications = [];
 
-    snapshot.forEach(doc => {
-      const booking = doc.data();
-      const endDate = convertToDate(booking.endDate);
-      if (!endDate) return; // Skip if date is invalid
+    snapshot.forEach(doc => {
+      const booking = doc.data();
+      const endDate = convertToDate(booking.endDate);
+      if (!endDate) return; // Skip if date is invalid
 
-      const gracePeriodEnd = DateTime.fromJSDate(endDate).plus({ hours: 3 }).toJSDate();
+      const gracePeriodEnd = DateTime.fromJSDate(endDate).plus({ hours: 3 }).toJSDate();
 
-      if (now > gracePeriodEnd) {
-        log(`Cron Job: Booking ${doc.id} is past 3-hour grace period. Updating status.`);
-        
-        const bookingRef = db.collection('bookings').doc(doc.id);
-        updatesBatch.update(bookingRef, {
-          paymentStatus: 'awaiting_return', // This is the new "late" status
-          updatedAt: admin.firestore.FieldValue.serverTimestamp()
-        });
+      if (now > gracePeriodEnd) {
+        log(`Cron Job: Booking ${doc.id} is past 3-hour grace period. Updating status.`);
+        
+        const bookingRef = db.collection('bookings').doc(doc.id);
+        updatesBatch.update(bookingRef, {
+          paymentStatus: 'awaiting_return', // This is the new "late" status
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
+        });
 
-        notifications.push(createNotification(
-          booking.ownerId,
-          `Your vehicle for booking #${doc.id.substring(0,5)} is now 3 hours overdue for return.`,
-          `/dashboard/my-bookings/${doc.id}`
-        ));
-         notifications.push(createNotification(
-          booking.renterId,
-          `Your booking (#${doc.id.substring(0,5)}) is now 3 hours overdue. Please return the vehicle. Late fees may apply.`,
-          `/dashboard/my-bookings/${doc.id}`
-        ));
-      }
-    });
+        notifications.push(createNotification(
+          booking.ownerId,
+          `Your vehicle for booking #${doc.id.substring(0,5)} is now 3 hours overdue for return.`,
+          `/dashboard/my-bookings/${doc.id}`
+        ));
+         notifications.push(createNotification(
+          booking.renterId,
+          `Your booking (#${doc.id.substring(0,5)}) is now 3 hours overdue. Please return the vehicle. Late fees may apply.`,
+          `/dashboard/my-bookings/${doc.id}`
+        ));
+      }
+    });
 
-    await updatesBatch.commit();
-    if (notifications.length > 0) {
-       await Promise.all(notifications);
-       log(`Cron Job: Sent ${notifications.length} late return notifications.`);
-    }
+    await updatesBatch.commit();
+    if (notifications.length > 0) {
+       await Promise.all(notifications);
+       log(`Cron Job: Sent ${notifications.length} late return notifications.`);
+    }
 
-  } catch (error) {
-     if (error.code === 9) { // FAILED_PRECONDITION
-        console.error('Cron Job Error: Firestore composite index is missing for autoHandleOverdueBookings. Please create it.');
-        console.error('The index required is on collection `bookings`: `paymentStatus` (ASC), `endDate` (ASC)');
-     } else {
-        console.error('[Cron Job: autoHandleOverdueBookings] Error:', error);
-     }
-  }
+  } catch (error) {
+     if (error.code === 9) { // FAILED_PRECONDITION
+        console.error('Cron Job Error: Firestore composite index is missing for autoHandleOverdueBookings. Please create it.');
+        console.error('The index required is on collection `bookings`: `paymentStatus` (ASC), `endDate` (ASC)');
+     } else {
+        console.error('[Cron Job: autoHandleOverdueBookings] Error:', error);
+     }
+  }
 };
 
 // 1. GET ALL FEES (For Admin)
 const getAllPlatformFees = async (req, res) => {
-  try {
-    const feesSnapshot = await db.collection('platform_fees')
-      .orderBy('submittedAt', 'desc')
-      .get();
+  try {
+    const feesSnapshot = await db.collection('platform_fees')
+      .orderBy('submittedAt', 'desc')
+      .get();
 
-    const fees = feesSnapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data(),
-      submittedAt: convertToDate(doc.data().submittedAt)?.toISOString()
-    }));
+    const fees = feesSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data(),
+      submittedAt: convertToDate(doc.data().submittedAt)?.toISOString()
+    }));
 
-    res.status(200).json(fees);
-  } catch (error) {
-    console.error('[BookingController] Error fetching all fees:', error);
-    res.status(500).json({ message: 'Error fetching fees.' });
-  }
+    res.status(200).json(fees);
+  } catch (error) {
+    console.error('[BookingController] Error fetching all fees:', error);
+    res.status(500).json({ message: 'Error fetching fees.' });
+  }
 };
 
 // 2. GET OWNER FEES (For Owner Dashboard)
 const getOwnerPlatformFees = async (req, res) => {
-  try {
-    const ownerId = req.customUser.uid;
-    // Note: If you get an index error, remove the .orderBy until you create the index
-    const feesSnapshot = await db.collection('platform_fees')
-      .where('ownerId', '==', ownerId)
-      .get();
+  try {
+    const ownerId = req.customUser.uid;
+    // Note: If you get an index error, remove the .orderBy until you create the index
+    const feesSnapshot = await db.collection('platform_fees')
+      .where('ownerId', '==', ownerId)
+      .get();
 
-    const fees = feesSnapshot.docs.map(doc => ({
-      id: doc.id,
-      ...doc.data()
-    }));
+    const fees = feesSnapshot.docs.map(doc => ({
+      id: doc.id,
+      ...doc.data()
+    }));
 
-    res.status(200).json(fees);
-  } catch (error) {
-    console.error('[BookingController] Error fetching owner fees:', error);
-    res.status(500).json({ message: 'Error fetching your fees.' });
-  }
+    res.status(200).json(fees);
+  } catch (error) {
+    console.error('[BookingController] Error fetching owner fees:', error);
+    res.status(500).json({ message: 'Error fetching your fees.' });
+  }
 };
 
 // 3. SUBMIT FEE (Owner Action)
 const submitPlatformFeePayment = async (req, res) => {
-  try {
-    const { month, year, amount, referenceNumber } = req.body;
-    const ownerId = req.customUser.uid;
-    const userDoc = await db.collection('users').doc(ownerId).get();
-    const userData = userDoc.exists ? userDoc.data() : {};
+  try {
+    const { month, year, amount, referenceNumber } = req.body;
+    const ownerId = req.customUser.uid;
+    const userDoc = await db.collection('users').doc(ownerId).get();
+    const userData = userDoc.exists ? userDoc.data() : {};
 
-    if (!month || !year || !amount || !referenceNumber) {
-       return res.status(400).json({ message: 'Missing required fields.' });
-    }
+    if (!month || !year || !amount || !referenceNumber) {
+       return res.status(400).json({ message: 'Missing required fields.' });
+    }
 
-    const feeRecord = {
-      ownerId,
-      hostName: `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || 'Unknown',
-      hostEmail: userData.email || 'N/A',
-      month,
-      year: parseInt(year),
-      amount: parseFloat(amount),
-      referenceNumber,
-      status: 'pending', // Default status
-      submittedAt: admin.firestore.FieldValue.serverTimestamp()
-    };
+    const feeRecord = {
+      ownerId,
+      hostName: `${userData.firstName || ''} ${userData.lastName || ''}`.trim() || 'Unknown',
+      hostEmail: userData.email || 'N/A',
+      month,
+      year: parseInt(year),
+      amount: parseFloat(amount),
+      referenceNumber,
+      status: 'pending', // Default status
+      submittedAt: admin.firestore.FieldValue.serverTimestamp()
+    };
 
-    const docRef = await db.collection('platform_fees').add(feeRecord);
+    const docRef = await db.collection('platform_fees').add(feeRecord);
 
-    log(`Platform fee submitted by ${ownerId} for ${month} ${year}.`);
-    res.status(201).json({ message: 'Payment submitted successfully.', id: docRef.id });
-  } catch (error) {
-    console.error('[BookingController] Error submitting fee:', error);
-    res.status(500).json({ message: 'Server error submitting payment.' });
-  }
+    log(`Platform fee submitted by ${ownerId} for ${month} ${year}.`);
+    res.status(201).json({ message: 'Payment submitted successfully.', id: docRef.id });
+  } catch (error) {
+    console.error('[BookingController] Error submitting fee:', error);
+    res.status(500).json({ message: 'Server error submitting payment.' });
+  }
 };
 
 // 4. VERIFY FEE (Admin Action)
 const verifyPlatformFee = async (req, res) => {
-  try {
-    const { feeId } = req.params;
-    
-    await db.collection('platform_fees').doc(feeId).update({
-      status: 'verified',
-      verifiedAt: admin.firestore.FieldValue.serverTimestamp()
-    });
+  try {
+    const { feeId } = req.params;
+    
+    await db.collection('platform_fees').doc(feeId).update({
+      status: 'verified',
+      verifiedAt: admin.firestore.FieldValue.serverTimestamp()
+    });
 
-    log(`Fee ${feeId} verified by admin.`);
-    res.status(200).json({ message: 'Fee verified successfully.' });
-  } catch (error) {
-    res.status(500).json({ message: 'Error verifying fee.', error: error.message });
-  }
+    log(`Fee ${feeId} verified by admin.`);
+    res.status(200).json({ message: 'Fee verified successfully.' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error verifying fee.', error: error.message });
+  }
 };
 
 
 module.exports = {
-  getAllBookings,
-  createBooking,
-  apiCheckAvailability,
-  getBookingsByUser,
-  getBookingsByVehicle,
-  getBookingById,
-  updateBookingPaymentMethod,
-  updateBookingStatus,
-  deleteBooking,
-  confirmBookingPayment,
-  approveBooking,
-  declineBooking,
-  getOwnerBookings,
-  confirmDownpaymentByUser,
-  confirmOwnerPayment,
-  cancelBooking,
-  submitBookingReport,
-  requestBookingExtension,
-  confirmExtensionPayment,
-  deferExtensionPayment,
-  generateBookingContract,
-  autoHandleOverdueBookings,
-  getAllPlatformFees,
-  getOwnerPlatformFees,
-  submitPlatformFeePayment,
-  verifyPlatformFee
+  getAllBookings,
+  createBooking,
+  apiCheckAvailability,
+  getBookingsByUser,
+  getBookingsByVehicle,
+  getBookingById,
+  updateBookingPaymentMethod,
+  updateBookingStatus,
+  deleteBooking,
+  confirmBookingPayment,
+  approveBooking,
+  declineBooking,
+  getOwnerBookings,
+  confirmDownpaymentByUser,
+  confirmOwnerPayment,
+  cancelBooking,
+  submitBookingReport,
+  requestBookingExtension,
+  confirmExtensionPayment,
+  deferExtensionPayment,
+  generateBookingContract,
+  autoHandleOverdueBookings,
+  getAllPlatformFees,
+  getOwnerPlatformFees,
+  submitPlatformFeePayment,
+  verifyPlatformFee
 };

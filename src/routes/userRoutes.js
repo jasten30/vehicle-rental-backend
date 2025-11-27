@@ -81,5 +81,12 @@ router.post(
   userController.toggleFavoriteVehicle
 );
 
+router.put(
+  '/update-suspension/:userId',
+  authMiddleware.verifyToken,
+  authMiddleware.authorizeRole(['admin']), // Only admins can do this
+  userController.toggleUserSuspension
+);
+
 module.exports = router;
 

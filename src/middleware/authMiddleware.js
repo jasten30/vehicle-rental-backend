@@ -23,6 +23,7 @@ const verifyToken = async (req, res, next) => {
         role: 'renter',
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         emailVerified: decodedToken.email_verified || false,
+        isSuspended: false, // Default to not suspended
       };
 
       // Only add email or phoneNumber if they exist in the token
@@ -43,14 +44,16 @@ const verifyToken = async (req, res, next) => {
     }
 
     const userData = userDoc.data();
+
     req.customUser = {
       uid: decodedToken.uid,
       email: userData.email || decodedToken.email,
       role: userData.role || 'renter',
       phone_number: userData.phoneNumber || decodedToken.phone_number,
+      isSuspended: userData.isSuspended || false, // Ensure this flag is passed
+      ...userData 
     };
     
-    console.log(`[AuthMiddleware] User authenticated: ${req.customUser.uid}, Role: ${req.customUser.role}`);
     next();
   } catch (error) {
     console.error('[AuthMiddleware] Token verification failed:', error.message);

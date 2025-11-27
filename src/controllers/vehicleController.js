@@ -3,9 +3,7 @@ const axios = require('axios');
 
 /**
  * Helper function to upload a Base64 image to Firebase Storage.
- * Handles both new Base64 uploads and existing URLs.
  */
-// ... (uploadBase64Image function - no changes) ...
 const uploadBase64Image = async (base64String, folderName = 'vehicle_images') => {
   if (!base64String || !base64String.startsWith('data:image/')) {
     return base64String;
@@ -37,16 +35,13 @@ const uploadBase64Image = async (base64String, folderName = 'vehicle_images') =>
 
 /**
  * Helper function to extract the storage path from a public Google URL.
- * e.g., https://storage.googleapis.com/bucket-name/o/vehicles%2F... -> vehicles/...
  */
-// ... (extractStoragePath function - no changes) ...
 const extractStoragePath = (url) => {
     if (!url || !url.includes(storageBucket.name)) return null;
     try {
         const urlParts = new URL(url);
         const prefix = `/b/${storageBucket.name}/o/`;
         if (urlParts.pathname.startsWith(prefix)) {
-            // Get path after /o/ and decode it (e.g., %2F becomes /)
             return decodeURIComponent(urlParts.pathname.substring(prefix.length).split('?')[0]);
         }
     } catch(e){ 
@@ -55,11 +50,9 @@ const extractStoragePath = (url) => {
     return null;
 };
 
-
 /**
  * Helper function to geocode a location object using Nominatim.
  */
-// ... (geocodeLocation function - no changes) ...
 const geocodeLocation = async (location) => {
   if (!location || !location.city || !location.country) {
     return null;
@@ -94,10 +87,10 @@ const geocodeLocation = async (location) => {
   return null;
 };
 
-/**
- * Get all vehicles, potentially enriching with owner data.
- */
-// ... (getAllVehicles function - no changes) ...
+// ==================================================================
+// CONTROLLER FUNCTIONS
+// ==================================================================
+
 const getAllVehicles = async (req, res) => {
   try {
     const vehiclesSnapshot = await db.collection('vehicles').get();
@@ -107,7 +100,6 @@ const getAllVehicles = async (req, res) => {
     }
 
     let vehiclesData = vehiclesSnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-
     const shouldEnrich = req.customUser?.role === 'admin';
 
     if (shouldEnrich) {
@@ -153,11 +145,6 @@ const getAllVehicles = async (req, res) => {
   }
 };
 
-
-/**
- * Get a single vehicle by ID, converting Timestamps for frontend.
- */
-// ... (getVehicleById function - no changes) ...
 const getVehicleById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -168,7 +155,6 @@ const getVehicleById = async (req, res) => {
     }
 
     const data = vehicleDoc.data();
-
     let parsedAvailability = [];
     if (data.availability && Array.isArray(data.availability)) {
       parsedAvailability = data.availability
@@ -196,13 +182,17 @@ const getVehicleById = async (req, res) => {
   }
 };
 
-
-/**
- * Add a new vehicle, handling image uploads and data conversions.
- */
-// ... (addVehicle function - no changes) ...
 const addVehicle = async (req, res) => {
   try {
+    // --- NEW: SUSPENSION CHECK ---
+    // If the user is suspended, block them from adding new vehicles
+    if (req.customUser.isSuspended) {
+        return res.status(403).json({ 
+            message: 'Your account is suspended. You cannot list new vehicles.' 
+        });
+    }
+    // -----------------------------
+
     const vehicleData = req.body;
     const ownerId = req.customUser.uid;
     const folderPath = `vehicles/${ownerId}`;
@@ -235,11 +225,9 @@ const addVehicle = async (req, res) => {
 
     const newVehicle = {
       ownerId,
-      // --- assetType fields ---
       assetType: cleanData.assetType || 'vehicle', 
       motorcycleType: cleanData.motorcycleType || null,
       engineDisplacement: cleanData.engineDisplacement ? parseInt(cleanData.engineDisplacement, 10) : null,
-      // ---
       make: cleanData.make || null,
       model: cleanData.model || null,
       year: cleanData.year ? parseInt(cleanData.year, 10) : null,
@@ -286,11 +274,6 @@ const addVehicle = async (req, res) => {
   }
 };
 
-
-/**
- * Update an existing vehicle, handling image uploads and data conversions.
- */
-// ... (updateVehicle function - no changes) ...
 const updateVehicle = async (req, res) => {
   try {
     const { id } = req.params;
@@ -311,7 +294,7 @@ const updateVehicle = async (req, res) => {
     }
 
     const cleanUpdates = { ...updates };
-    // --- Image Uploads ---
+    
     if (cleanUpdates.cor?.corImage?.startsWith('data:image')) { cleanUpdates.cor.corImage = await uploadBase64Image(cleanUpdates.cor.corImage, `${folderPath}/documents`); }
     const orImageBase64 = cleanUpdates.or?.orImage || cleanUpdates.or?.orImageUrl;
     if (orImageBase64?.startsWith('data:image')) {
@@ -326,7 +309,6 @@ const updateVehicle = async (req, res) => {
       cleanUpdates.exteriorPhotos = p.filter(url => url);
     } else if (cleanUpdates.hasOwnProperty('exteriorPhotos')) { 
       delete cleanUpdates.exteriorPhotos; 
-      console.warn(`[VC][update] Ignoring non-array exteriorPhotos.`); 
     }
     
     if (Array.isArray(cleanUpdates.interiorPhotos)) {
@@ -334,30 +316,23 @@ const updateVehicle = async (req, res) => {
       cleanUpdates.interiorPhotos = p.filter(url => url);
     } else if (cleanUpdates.hasOwnProperty('interiorPhotos')) { 
       delete cleanUpdates.interiorPhotos; 
-      console.warn(`[VC][update] Ignoring non-array interiorPhotos.`); 
     }
 
-    // --- Geocode Location ---
     if (cleanUpdates.location && typeof cleanUpdates.location === 'object') {
       const coordinates = await geocodeLocation(cleanUpdates.location);
       if (coordinates) { cleanUpdates.latitude = coordinates.lat; cleanUpdates.longitude = coordinates.lon; }
     }
 
-    // --- Data Types & Fields ---
     if (cleanUpdates.year) { cleanUpdates.year = parseInt(cleanUpdates.year, 10); }
     const price = cleanUpdates.pricing?.manualPrice ?? cleanUpdates.pricing?.recommendedPrice;
     if (price !== undefined && price !== null) { cleanUpdates.rentalPricePerDay = parseFloat(price); }
     if (cleanUpdates.seats) { cleanUpdates.seatingCapacity = parseInt(cleanUpdates.seats, 10); }
     else if (cleanUpdates.seatingCapacity) { cleanUpdates.seatingCapacity = parseInt(cleanUpdates.seatingCapacity, 10); }
     
-    // --- UPDATED: Handle motorcycle fields on update ---
     if (cleanUpdates.hasOwnProperty('engineDisplacement')) {
         cleanUpdates.engineDisplacement = cleanUpdates.engineDisplacement ? parseInt(cleanUpdates.engineDisplacement, 10) : null;
     }
-    // assetType and motorcycleType are strings, they will be saved as-is if present in 'cleanUpdates'
-    // --- END UPDATE ---
 
-    // --- AVAILABILITY CONVERSION ---
     if (cleanUpdates.hasOwnProperty('availability') && Array.isArray(cleanUpdates.availability)) {
       cleanUpdates.availability = cleanUpdates.availability
         .filter(period => period.start && period.end)
@@ -376,10 +351,8 @@ const updateVehicle = async (req, res) => {
         })
         .filter(period => period !== null);
     } else if (cleanUpdates.hasOwnProperty('availability')) {
-      console.warn(`[VehicleController][updateVehicle] Received non-array or null for availability update on vehicle ${id}. Setting to empty array.`);
       cleanUpdates.availability = [];
     }
-    // --- END AVAILABILITY CONVERSION ---
 
     cleanUpdates.updatedAt = admin.firestore.FieldValue.serverTimestamp();
 
@@ -392,15 +365,11 @@ const updateVehicle = async (req, res) => {
   }
 };
 
-
-/**
- * Delete a vehicle. Includes logic for deleting associated storage files.
- */
-// ... (deleteVehicle function - no changes) ...
 const deleteVehicle = async (req, res) => {
   try {
     const { id } = req.params;
     const ownerId = req.customUser.uid;
+    const userRole = req.customUser.role; // Get the role
 
     const vehicleRef = db.collection('vehicles').doc(id);
     const vehicleDoc = await vehicleRef.get();
@@ -409,7 +378,10 @@ const deleteVehicle = async (req, res) => {
       console.warn(`[VehicleController][deleteVehicle] Delete failed: Vehicle not found for ID: ${id}`);
       return res.status(404).json({ message: 'Vehicle not found.' });
     }
-    if (vehicleDoc.data().ownerId !== ownerId) {
+
+    // --- PERMISSION CHECK ---
+    // Allow if user is Admin OR if user matches the ownerId
+    if (userRole !== 'admin' && vehicleDoc.data().ownerId !== ownerId) {
        console.warn(`[VehicleController][deleteVehicle] Delete forbidden: User ${ownerId} does not own vehicle ${id}`);
       return res.status(403).json({ message: 'Unauthorized: You do not own this vehicle.' });
     }
@@ -418,7 +390,6 @@ const deleteVehicle = async (req, res) => {
     const vehicleData = vehicleDoc.data();
     const imagePathsToDelete = [];
 
-    // Add all URLs to the list
     if (vehicleData.cor?.corImage) imagePathsToDelete.push(vehicleData.cor.corImage);
     if (vehicleData.or?.orImage) imagePathsToDelete.push(vehicleData.or.orImage);
     if (vehicleData.profilePhotoUrl) imagePathsToDelete.push(vehicleData.profilePhotoUrl);
@@ -427,21 +398,18 @@ const deleteVehicle = async (req, res) => {
 
     const deletePromises = [];
     for (const url of imagePathsToDelete) {
-        const path = extractStoragePath(url); // Use the helper function
+        const path = extractStoragePath(url);
         if (path) {
-            console.log(`[VehicleController][deleteVehicle] Deleting file from storage: ${path}`);
             deletePromises.push(
                 storageBucket.file(path).delete().catch(err => 
-                    console.error(`Failed to delete ${path}:`, err.message) // Log error but don't stop
+                    console.error(`Failed to delete ${path}:`, err.message)
                 )
             );
         }
     }
     
     await Promise.all(deletePromises);
-    console.log(`[VehicleController][deleteVehicle] Finished attempting storage file deletion for ${id}.`);
-    // --- End Image Deletion ---
-
+    
     await vehicleRef.delete();
     console.log(`[VehicleController][deleteVehicle] Vehicle ID ${id} deleted successfully.`);
     res.status(200).json({ message: 'Vehicle deleted successfully.' });
@@ -452,11 +420,6 @@ const deleteVehicle = async (req, res) => {
   }
 };
 
-
-/**
- * Get vehicles listed by the currently authenticated owner.
- */
-// ... (getVehiclesByOwner function - no changes) ...
 const getVehiclesByOwner = async (req, res) => {
   try {
     const ownerId = req.customUser.uid;
@@ -494,15 +457,9 @@ const getVehiclesByOwner = async (req, res) => {
   }
 };
 
-// ================================================
-//  NEW FUNCTION
-// ================================================
-/**
- * Get all vehicles listed by a *specific* owner ID (public).
- */
 const getPublicVehiclesByOwner = async (req, res) => {
   try {
-    const { userId } = req.params; // Get ID from URL parameter
+    const { userId } = req.params;
     if (!userId) {
       return res.status(400).json({ message: 'User ID is required.' });
     }
@@ -514,7 +471,6 @@ const getPublicVehiclesByOwner = async (req, res) => {
       return res.status(200).json([]);
     }
 
-    // This is a simplified version, no need to convert dates for a card
     const vehicles = snapshot.docs.map(doc => {
       const data = doc.data();
       return {
@@ -526,7 +482,7 @@ const getPublicVehiclesByOwner = async (req, res) => {
           location: data.location,
           profilePhotoUrl: data.profilePhotoUrl,
           exteriorPhotos: data.exteriorPhotos,
-          assetType: data.assetType || 'vehicle' // Default to vehicle
+          assetType: data.assetType || 'vehicle'
       };
     });
     res.status(200).json(vehicles);
@@ -535,8 +491,6 @@ const getPublicVehiclesByOwner = async (req, res) => {
     res.status(500).json({ message: 'Error fetching owner vehicles.', error: error.message });
   }
 };
-// ================================================
-
 
 module.exports = {
   getAllVehicles,
@@ -545,5 +499,5 @@ module.exports = {
   updateVehicle,
   deleteVehicle,
   getVehiclesByOwner,
-  getPublicVehiclesByOwner, // --- ADD THIS TO EXPORTS ---
+  getPublicVehiclesByOwner, 
 };

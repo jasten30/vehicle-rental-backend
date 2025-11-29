@@ -1,16 +1,19 @@
 const nodemailer = require('nodemailer');
 
 // --- SECURE & TIMEOUT-PROOF CONFIGURATION ---
-// 1. Uses Port 465 (SSL) to prevent Railway connection timeouts.
 // 2. Uses process.env to prevent GitGuardian security alerts.
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
-  port: 465,
-  secure: true, // Must be true for port 465
+  port: 587,              // Changed from 465 to 587
+  secure: false,          // Must be false for port 587
   auth: {
-    user: process.env.EMAIL_USER, // Reads from Railway Variable
-    pass: process.env.EMAIL_PASS, // Reads from Railway Variable
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
   },
+  tls: {
+    // This helps prevent "Self Signed Certificate" errors in some containers
+    rejectUnauthorized: false
+  }
 });
 // --------------------------------------------
 

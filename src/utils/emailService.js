@@ -1,13 +1,17 @@
 const nodemailer = require('nodemailer');
 
-// Configure the email transporter using your email service's credentials
+// --- FIXED CONFIGURATION FOR RAILWAY ---
+// We use Port 465 (SSL) to prevent connection timeouts in the cloud.
 const transporter = nodemailer.createTransport({
-  service: 'gmail', // Or another service like 'SendGrid'
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true, // true for 465, false for other ports
   auth: {
-    user: 'rentcycleplatform@gmail.com', // Your email address
-    pass: 'wonu xqaa eyry ysxo',   // Your email's "App Password" (not your regular password)
+    user: 'rentcycleplatform@gmail.com',
+    pass: 'wonu xqaa eyry ysxo',
   },
 });
+// ---------------------------------------
 
 /**
  * Sends a verification email to a user.
@@ -49,7 +53,7 @@ const sendVerificationEmail = async (userEmail, verificationCode) => {
  */
 const sendPasswordResetEmail = async (to, link) => {
   const mailOptions = {
-    from: `"RentCycle" <${process.env.EMAIL_USER || 'rentcycleplatform@gmail.com'}>`,
+    from: '"RentCycle" <rentcycleplatform@gmail.com>',
     to: to,
     subject: 'Reset Your RentCycle Password',
     text: `You requested a password reset. Click the following link to reset your password: ${link}`,
@@ -75,16 +79,18 @@ const sendPasswordResetEmail = async (to, link) => {
 };
 
 
-
 /**
  * Sends a contact form submission to the admin email.
  * @param {object} formData - The form data { name, email, subject, message }
  */
 const sendContactFormEmail = async (formData) => {
   const { name, email, subject, message } = formData;
-  
+
+  // Use the credentials directly or fallback to hardcoded for now
+  const senderEmail = 'rentcycleplatform@gmail.com';
+
   const mailOptions = {
-    from: `"RentCycle Contact Form" <${process.env.EMAIL_USER || 'rentcycleplatform@gmail.com'}>`,
+    from: `"RentCycle Contact Form" <${senderEmail}>`,
     to: 'rentcycleplatform@gmail.com', // Your admin email
     subject: `New Contact Form Submission: ${subject}`,
     replyTo: email, // Set the 'reply-to' to the user's email
@@ -113,10 +119,8 @@ const sendContactFormEmail = async (formData) => {
   }
 };
 
-
-
 module.exports = {
   sendVerificationEmail,
-  sendPasswordResetEmail, 
-  sendContactFormEmail, 
+  sendPasswordResetEmail,
+  sendContactFormEmail,
 };

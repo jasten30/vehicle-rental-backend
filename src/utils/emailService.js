@@ -1,19 +1,11 @@
 const nodemailer = require('nodemailer');
 
-// --- SECURE & TIMEOUT-PROOF CONFIGURATION ---
-// 2. Uses process.env to prevent GitGuardian security alerts.
 const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 587,              // Changed from 465 to 587
-  secure: false,          // Must be false for port 587
+  service: 'gmail', // Let Nodemailer handle host/port details automatically
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
-  tls: {
-    // This helps prevent "Self Signed Certificate" errors in some containers
-    rejectUnauthorized: false
-  }
 });
 // --------------------------------------------
 

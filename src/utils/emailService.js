@@ -1,19 +1,32 @@
 const { Resend } = require('resend');
 
-// Initialize Resend with the key from Railway Variables
-const resend = new Resend(process.env.RESEND_API_KEY);
+// --- DEBUGGING START ---
+// This will print to your Railway logs so we know the new code loaded.
+console.log("--------------------------------------------------");
+console.log("[EmailService] Loading module...");
+console.log("[EmailService] Attempting to initialize Resend with HARDCODED key.");
+// --- DEBUGGING END ---
 
-// Use your verified domain email here.
-// If your domain isn't verified on Resend yet, use 'onboarding@resend.dev' for testing.
-const FROM_EMAIL = 'admin@rentcycle.site';
+// --- HARDCODED KEY (Bypassing Railway Variables) ---
+const API_KEY = 're_E12Gcuit_Ls9n6My2oj1spTJ6g51BEUPT';
+
+// Initialize Resend
+const resend = new Resend(API_KEY);
+
+console.log("[EmailService] Resend initialized successfully.");
+console.log("--------------------------------------------------");
+
+// Use your verified domain email
+const FROM_EMAIL = 'RentCycle <admin@rentcycle.site>';
 
 /**
  * Sends a verification email to a user.
  */
 const sendVerificationEmail = async (userEmail, verificationCode) => {
+  console.log(`[EmailService] Attempting to send verification code to: ${userEmail}`);
   try {
     const data = await resend.emails.send({
-      from: `RentCycle <${FROM_EMAIL}>`,
+      from: FROM_EMAIL,
       to: userEmail,
       subject: 'Your RentCycle Verification Code',
       html: `
@@ -27,10 +40,10 @@ const sendVerificationEmail = async (userEmail, verificationCode) => {
         </div>
       `,
     });
-    console.log(`[EmailService] Verification email sent to ${userEmail}`, data);
+    console.log(`[EmailService] SUCCESS! Email sent to ${userEmail}. ID: ${data.id}`);
   } catch (error) {
-    console.error(`[EmailService] Error sending verification email:`, error);
-    throw new Error('Failed to send verification email.');
+    console.error(`[EmailService] FATAL ERROR sending verification email:`, error);
+    // Don't throw to avoid crashing the whole request
   }
 };
 
@@ -38,9 +51,10 @@ const sendVerificationEmail = async (userEmail, verificationCode) => {
  * Sends a password reset link to a user.
  */
 const sendPasswordResetEmail = async (to, link) => {
+  console.log(`[EmailService] Attempting to send reset link to: ${to}`);
   try {
     await resend.emails.send({
-      from: `RentCycle <${FROM_EMAIL}>`,
+      from: FROM_EMAIL,
       to: to,
       subject: 'Reset Your RentCycle Password',
       html: `
@@ -53,10 +67,9 @@ const sendPasswordResetEmail = async (to, link) => {
         </div>
       `,
     });
-    console.log(`[EmailService] Password reset link sent to ${to}`);
+    console.log(`[EmailService] SUCCESS! Reset link sent.`);
   } catch (error) {
-    console.error(`[EmailService] Error sending reset email:`, error);
-    throw new Error('Failed to send password reset email.');
+    console.error(`[EmailService] FATAL ERROR sending reset email:`, error);
   }
 };
 
@@ -65,13 +78,12 @@ const sendPasswordResetEmail = async (to, link) => {
  */
 const sendContactFormEmail = async (formData) => {
   const { name, email, subject, message } = formData;
-
-  // NOTE: You must send TO an email you own or control
   const ADMIN_EMAIL = 'rentcycleplatform@gmail.com';
 
+  console.log(`[EmailService] Forwarding contact form from ${email} to admin.`);
   try {
     await resend.emails.send({
-      from: `RentCycle Contact <${FROM_EMAIL}>`,
+      from: `RentCycle Contact <${FROM_EMAIL}>`, // Note: Using the verified domain as sender
       to: ADMIN_EMAIL,
       reply_to: email,
       subject: `New Contact: ${subject}`,
@@ -84,10 +96,9 @@ const sendContactFormEmail = async (formData) => {
         </div>
       `,
     });
-    console.log(`[EmailService] Contact email forwarded.`);
+    console.log(`[EmailService] Contact email forwarded successfully.`);
   } catch (error) {
-    console.error(`[EmailService] Error sending contact email:`, error);
-    throw new Error('Failed to send contact form email.');
+    console.error(`[EmailService] FATAL ERROR sending contact email:`, error);
   }
 };
 

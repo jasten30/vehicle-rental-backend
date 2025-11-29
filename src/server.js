@@ -1,147 +1,58 @@
-const express = require('express');
-const cors = require('cors');
-const cron = require('node-cron');
-const { admin, db } = require('./utils/firebase');
-const { createNotification } = require('./utils/notificationHelper');
+// backend/src/server.js
 
-const { autoHandleOverdueBookings } = require('./controllers/bookingController'); 
+const express = require("express");
+const cors = require("cors");
+const bodyParser = require("body-parser");
 
 // Import route modules
-const authRoutes = require('./routes/authRoutes');
-const vehicleRoutes = require('./routes/vehicleRoutes');
-const bookingRoutes = require('./routes/bookingRoutes');
-const paymentRoutes = require('./routes/paymentRoutes');
-const userRoutes = require('./routes/userRoutes');
-const chatRoutes = require('./routes/chatRoutes');
-const adminRoutes = require('./routes/adminRoutes');
-const reviewsRoutes = require('./routes/reviewsRoutes');
-const notificationRoutes = require('./routes/notificationRoutes');
+const authRoutes = require("./routes/authRoutes");
+const vehicleRoutes = require("./routes/vehicleRoutes");
+const bookingRoutes = require("./routes/bookingRoutes");
+const paymentRoutes = require("./routes/paymentRoutes");
+const userRoutes = require("./routes/userRoutes");
 
 const app = express();
+// The port is set to 5001 to match the frontend
 const PORT = process.env.PORT || 5001;
 
-// Request Logger Middleware
-app.use((req, res, next) => {
-  console.log(`[Request Logger] Method: ${req.method}, URL: ${req.originalUrl}, Time: ${new Date().toISOString()}`);
-  next();
-});
-
+// --- FIXED CORS SECTION ---
+// We explicitly list the allowed domains.
 app.use(cors({
-  origin: ['http://localhost:8080', 'http://localhost:5000'], // Adjust origins as needed
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  origin: [
+    "http://localhost:8080",       // Your local Vue dev server
+    "http://localhost:5173",       // Vite default (just in case)
+    "https://rentcycle.site",      // Your main domain
+    "https://www.rentcycle.site"   // Your www subdomain
+  ],
+  credentials: true,               // Essential for cookies/headers
+  methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
 }));
+// --------------------------
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+// Parse JSON request bodies with a larger payload limit
+app.use(bodyParser.json({ limit: "50mb" }));
+app.use(bodyParser.urlencoded({ extended: true, limit: "50mb" }));
 
 // Route Middlewares
-app.use('/api/auth', authRoutes);
-app.use('/api/vehicles', vehicleRoutes);
-app.use('/api/bookings', bookingRoutes);
-app.use('/api/payment', paymentRoutes);
-app.use('/api/users', userRoutes);
-app.use('/api/chats', chatRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/reviews', reviewsRoutes);
-app.use('/api/notifications', notificationRoutes);
+app.use("/api/auth", authRoutes);
+app.use("/api/vehicles", vehicleRoutes);
+app.use("/api/bookings", bookingRoutes);
+app.use("/api/payment", paymentRoutes);
+app.use("/api/users", userRoutes);
 
 // Basic route for testing
-app.get('/', (req, res) => {
-  res.send('RentCycle Backend API is running!');
+app.get("/", (req, res) => {
+  res.send("RentCycle Backend API is running!");
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);
-  res.status(500).send('Something broke!');
+  res.status(500).send("Something broke!");
 });
 
-// --- Function to send booking reminders ---
-const sendBookingReminders = async () => {
-  console.log('--- Cron Job: Running sendBookingReminders ---');
-  try {
-    const now = admin.firestore.Timestamp.now();
-    
-    // Find bookings with a startDate between 24 and 25 hours from now
-    const reminderStart = admin.firestore.Timestamp.fromMillis(now.toMillis() + (24 * 60 * 60 * 1000));
-    const reminderEnd = admin.firestore.Timestamp.fromMillis(now.toMillis() + (25 * 60 * 60 * 1000)); // 1-hour window
-
-    const bookingsRef = db.collection('bookings');
-    
-    // Query for bookings that are confirmed, not yet reminded, and in the window
-    const snapshot = await bookingsRef
-      .where('paymentStatus', '==', 'confirmed')
-      .where('isReminderSent', '==', false)
-      .where('startDate', '>=', reminderStart)
-      .where('startDate', '<', reminderEnd)
-      .get();
-
-    if (snapshot.empty) {
-      console.log('Cron Job: No upcoming bookings found needing reminders.');
-      return;
-    }
-
-    const reminderPromises = [];
-    snapshot.forEach(doc => {
-      const booking = doc.data();
-      const bookingId = doc.id;
-      
-      console.log(`Cron Job: Sending reminder for booking ${bookingId}`);
-
-      // 1. Notify Renter
-      reminderPromises.push(
-        createNotification(
-          booking.renterId,
-          `Reminder: Your booking (#${bookingId.substring(0,5)}) is in 24 hours.`,
-          `/dashboard/my-bookings/${bookingId}`
-        )
-      );
-      
-      // 2. Notify Owner
-      reminderPromises.push(
-        createNotification(
-          booking.ownerId,
-          `Reminder: Your vehicle is scheduled for pickup in 24 hours (Booking #${bookingId.substring(0,5)}).`,
-          `/dashboard/my-bookings/${bookingId}`
-        )
-      );
-
-      // 3. Mark as sent
-      reminderPromises.push(
-        doc.ref.update({ isReminderSent: true })
-      );
-    });
-
-    await Promise.all(reminderPromises);
-    console.log(`Cron Job: Sent ${snapshot.size} booking reminders.`);
-
-  } catch (error) {
-    if (error.code === 9) { // FAILED_PRECONDITION
-       console.error('Cron Job Error: Firestore composite index is missing for this query. Please create it in the Firebase console.');
-       console.error('The index required is on collection `bookings`: `paymentStatus` (ASC), `isReminderSent` (ASC), `startDate` (ASC)');
-    } else {
-       console.error('Cron Job: Error sending booking reminders:', error);
-    }
-  }
-};
-
-// --- Cron Job Scheduler ---
-console.log("Setting up hourly cron job (runs at 0 minutes past the hour).");
-cron.schedule('0 * * * *', async () => {
-  console.log('--- Hourly Cron Job Started ---');
-  
-  // 1. Send 24-hour reminders
-  await sendBookingReminders();
-  
-  // 2. Check for late returns (3-hour grace period)
-  await autoHandleOverdueBookings();
-  
-  console.log('--- Hourly Cron Job Finished ---');
-});
-
-
-
+// Start the server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });

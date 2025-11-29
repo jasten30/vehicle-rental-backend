@@ -1,17 +1,18 @@
 const nodemailer = require('nodemailer');
 
-// --- FIXED CONFIGURATION FOR RAILWAY ---
-// We use Port 465 (SSL) to prevent connection timeouts in the cloud.
+// --- SECURE & TIMEOUT-PROOF CONFIGURATION ---
+// 1. Uses Port 465 (SSL) to prevent Railway connection timeouts.
+// 2. Uses process.env to prevent GitGuardian security alerts.
 const transporter = nodemailer.createTransport({
   host: 'smtp.gmail.com',
   port: 465,
-  secure: true, // true for 465, false for other ports
+  secure: true, // Must be true for port 465
   auth: {
-    user: 'rentcycleplatform@gmail.com',
-    pass: 'wonu xqaa eyry ysxo',
+    user: process.env.EMAIL_USER, // Reads from Railway Variable
+    pass: process.env.EMAIL_PASS, // Reads from Railway Variable
   },
 });
-// ---------------------------------------
+// --------------------------------------------
 
 /**
  * Sends a verification email to a user.
@@ -20,7 +21,7 @@ const transporter = nodemailer.createTransport({
  */
 const sendVerificationEmail = async (userEmail, verificationCode) => {
   const mailOptions = {
-    from: '"RentCycle" <rentcycleplatform@gmail.com>',
+    from: `"RentCycle" <${process.env.EMAIL_USER}>`,
     to: userEmail,
     subject: 'Your RentCycle Verification Code',
     html: `
@@ -40,7 +41,7 @@ const sendVerificationEmail = async (userEmail, verificationCode) => {
     console.log(`[EmailService] Verification email sent to ${userEmail}`);
   } catch (error) {
     console.error(`[EmailService] Error sending email to ${userEmail}:`, error);
-    // In a real app, you might want to handle this error more gracefully
+    // Throw error so the frontend knows it failed
     throw new Error('Failed to send verification email.');
   }
 };
@@ -53,7 +54,7 @@ const sendVerificationEmail = async (userEmail, verificationCode) => {
  */
 const sendPasswordResetEmail = async (to, link) => {
   const mailOptions = {
-    from: '"RentCycle" <rentcycleplatform@gmail.com>',
+    from: `"RentCycle" <${process.env.EMAIL_USER}>`,
     to: to,
     subject: 'Reset Your RentCycle Password',
     text: `You requested a password reset. Click the following link to reset your password: ${link}`,
@@ -86,14 +87,11 @@ const sendPasswordResetEmail = async (to, link) => {
 const sendContactFormEmail = async (formData) => {
   const { name, email, subject, message } = formData;
 
-  // Use the credentials directly or fallback to hardcoded for now
-  const senderEmail = 'rentcycleplatform@gmail.com';
-
   const mailOptions = {
-    from: `"RentCycle Contact Form" <${senderEmail}>`,
-    to: 'rentcycleplatform@gmail.com', // Your admin email
+    from: `"RentCycle Contact Form" <${process.env.EMAIL_USER}>`,
+    to: process.env.EMAIL_USER, // Send to yourself (Admin)
     subject: `New Contact Form Submission: ${subject}`,
-    replyTo: email, // Set the 'reply-to' to the user's email
+    replyTo: email, // Set the 'reply-to' to the user's email so you can hit reply
     text: `You have a new message from ${name} (${email}).\n\nSubject: ${subject}\n\nMessage:\n${message}`,
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #ddd; border-radius: 10px;">

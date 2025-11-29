@@ -1,11 +1,17 @@
 const nodemailer = require('nodemailer');
 
 const transporter = nodemailer.createTransport({
-  service: 'gmail', // Let Nodemailer handle host/port details automatically
+  host: 'smtp.gmail.com',
+  port: 465,
+  secure: true, // Use SSL
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
+  // CRITICAL NETWORK SETTINGS
+  family: 4,           // Force IPv4 (Fixes common container timeouts)
+  connectionTimeout: 10000, // Wait max 10 seconds for connection
+  socketTimeout: 10000,     // Wait max 10 seconds for data
 });
 // --------------------------------------------
 

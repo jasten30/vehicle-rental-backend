@@ -1,12 +1,7 @@
 const { Resend } = require('resend');
 
-// --- FINAL SECURE SETUP ---
-// We removed the hardcoded key. We rely on the Railway Variable now.
-if (!process.env.RESEND_API_KEY) {
-  console.error("CRITICAL ERROR: RESEND_API_KEY is missing from environment variables!");
-}
-
-const resend = new Resend(process.env.RESEND_API_KEY);
+// --- HARDCODED KEY (Safety Fallback) ---
+const resend = new Resend('re_E12Gcuit_Ls9n6My2oj1spTJ6g51BEUPT');
 
 // Use your verified domain email
 const FROM_EMAIL = 'RentCycle <admin@rentcycle.site>';
@@ -34,7 +29,6 @@ const sendVerificationEmail = async (userEmail, verificationCode) => {
     console.log(`[EmailService] Verification email sent to ${userEmail}`);
   } catch (error) {
     console.error(`[EmailService] Error sending verification email:`, error);
-    // Log error but don't crash
   }
 };
 
